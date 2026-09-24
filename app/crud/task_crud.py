@@ -1,10 +1,12 @@
-from sqlalchemy.orm import Session
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from fastapi import HTTPException
-from app.models.task_model import Task as TaskModel
-from app.schemas.task_schema import TaskCreate
+from sqlalchemy.orm import Session
+
 from app.crud.base import get_owned
 from app.crud.tag_crud import get_or_create_tag
+from app.models.task_model import Task as TaskModel
+from app.schemas.task_schema import TaskCreate
 
 
 def get_tasks(db: Session, user_id: str):
@@ -43,13 +45,13 @@ def _validate_parent_task_id(db: Session, parent_task_id: int, user_id: str) -> 
         )
 
 
-
 def create_task(db: Session, task: TaskCreate, user_id: str):
     """Create and persist a new task, auto-creating any new tags."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     priority = task.priority
     if priority is not None:
         _validate_priority_unique(db, user_id, priority)
+    _validate_parent_task_id(db, task.parent_task_id, user_id)
 
     db_task = TaskModel(
         title=task.title,
@@ -89,7 +91,7 @@ def update_task_status(db: Session, task_id: int, user_id: str):
     if not task:
         return None
     task.completed = not task.completed
-    task.completed_date = datetime.now(timezone.utc) if task.completed else None
+    task.completed_date = datetime.now(UTC) if task.completed else None
     db.commit()
     db.refresh(task)
     return task
@@ -129,7 +131,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     # comparison misalign by the caller's UTC offset, silently dropping
     # same-day completions out of the daily brief's activity log.
     if task.completed and not was_completed:
-        db_task.completed_date = datetime.now(timezone.utc)
+        db_task.completed_date = datetime.now(UTC)
     elif not task.completed:
         db_task.completed_date = None
 

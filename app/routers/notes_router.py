@@ -1,21 +1,25 @@
+from datetime import date as date_type
+from datetime import datetime, timedelta
+from datetime import time as time_type
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from datetime import date as date_type, datetime, time as time_type, timedelta
+
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
+from app.crud.note_crud import create_note, delete_note, get_notes, update_note
+from app.crud.note_session_crud import (
+    end_session,
+    get_time_by_note_for_datetime_range,
+    get_time_by_note_for_range,
+    get_total_time_by_note,
+    get_total_time_seconds,
+    reap_stale_sessions,
+    start_session,
+)
 from app.database.database import get_db
 from app.schemas.note_schema import Note, NoteCreate, NoteUpdate
-from app.schemas.note_session_schema import NoteSession, NoteSessionStart, NoteTimeSpent, NoteSessionReapResult
-from app.crud.note_crud import get_notes, create_note, update_note, delete_note
-from app.crud.note_session_crud import (
-    start_session,
-    end_session,
-    get_total_time_seconds,
-    get_total_time_by_note,
-    get_time_by_note_for_range,
-    get_time_by_note_for_datetime_range,
-    reap_stale_sessions,
-)
+from app.schemas.note_session_schema import NoteSession, NoteSessionReapResult, NoteSessionStart, NoteTimeSpent
 
 router = APIRouter()
 
@@ -126,7 +130,9 @@ def read_note_time_spent_for_range(
         start = date_type.fromisoformat(start_date)
         end = date_type.fromisoformat(end_date)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date format. Use YYYY-MM-DD.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date format. Use YYYY-MM-DD."
+        ) from None
     if start > end:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must not be after end_date.")
 

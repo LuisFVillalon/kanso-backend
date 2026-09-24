@@ -1,18 +1,20 @@
 from datetime import date, datetime, time, timedelta
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from app.models.task_model import Task as TaskModel
-from app.models.note_model import Note as NoteModel
+
 from app.crud.habit_crud import get_habits
-from app.crud.profile_crud import get_profile
 from app.crud.note_session_crud import get_time_by_note_for_date, get_time_by_note_for_datetime_range
+from app.crud.profile_crud import get_profile
+from app.models.note_model import Note as NoteModel
+from app.models.task_model import Task as TaskModel
 from app.schemas.debrief_schema import (
     DailyDebriefReport,
-    DebriefTaskItem,
     DebriefNoteItem,
+    DebriefTaskItem,
+    FocusNextItem,
     HabitDebriefStatus,
     WorkloadCapacity,
-    FocusNextItem,
 )
 
 # Tasks at or above this estimated_time (hours) count as "high effort" for focus_next.

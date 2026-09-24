@@ -1,6 +1,9 @@
+from datetime import date, datetime, time
 from decimal import Decimal
-from datetime import date, time, datetime
-from pydantic import BaseModel, field_validator
+
+from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.limits import SHORT_MAX, TAGS_PER_ITEM_MAX, TEXT_MAX, TITLE_MAX
 from app.schemas.tag_schema import Tag, TagCreate
 
 
@@ -50,7 +53,12 @@ class TaskBase(BaseModel):
 
 
 class TaskCreate(TaskBase):
-    pass
+    # Limits live on the input model only, so rows saved before they existed
+    # can still be read back through the Task response model.
+    title: str = Field(max_length=TITLE_MAX)
+    description: str | None = Field(None, max_length=TEXT_MAX)
+    category: str | None = Field(None, max_length=SHORT_MAX)
+    tags: list[TagCreate] = Field([], max_length=TAGS_PER_ITEM_MAX)
 
 
 class Task(TaskBase):

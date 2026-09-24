@@ -1,7 +1,9 @@
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+
+from app.crud.base import get_owned
 from app.models.tag_model import Tag as TagModel
 from app.schemas.tag_schema import TagCreate
-from app.crud.base import get_owned
 
 
 def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
@@ -22,6 +24,15 @@ def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
     return tag
 
 
+def _ensure_name_available(db: Session, name: str, user_id: str, exclude_id: int | None = None) -> None:
+    """Raise 409 if the user already has another tag with this name (uq_tags_name_user_id)."""
+    q = db.query(TagModel).filter(TagModel.name == name, TagModel.user_id == user_id)
+    if exclude_id is not None:
+        q = q.filter(TagModel.id != exclude_id)
+    if q.first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f'A tag named "{name}" already exists.')
+
+
 def get_tags(db: Session, user_id: str):
     """Return all tags owned by the given user."""
     return db.query(TagModel).filter(TagModel.user_id == user_id).all()
@@ -29,6 +40,7 @@ def get_tags(db: Session, user_id: str):
 
 def create_tag(db: Session, tag: TagCreate, user_id: str):
     """Create and persist a new tag, returning the saved record."""
+    _ensure_name_available(db, tag.name, user_id)
     db_tag = TagModel(name=tag.name, color=tag.color, user_id=user_id)
     db.add(db_tag)
     db.commit()
@@ -51,6 +63,7 @@ def update_tag(db: Session, tag_id: int, tag: TagCreate, user_id: str):
     db_tag = get_owned(db, TagModel, tag_id, user_id)
     if not db_tag:
         return None
+    _ensure_name_available(db, tag.name, user_id, exclude_id=tag_id)
     db_tag.name = tag.name
     db_tag.color = tag.color
     db.commit()

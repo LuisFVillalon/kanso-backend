@@ -1,9 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from app.models.note_session_model import NoteSession as NoteSessionModel
-from app.models.note_model import Note as NoteModel
+
 from app.crud.base import get_owned
+from app.models.note_model import Note as NoteModel
+from app.models.note_session_model import NoteSession as NoteSessionModel
 
 # A session still open past this age is treated as orphaned (crashed tab,
 # force-quit) rather than a genuine sitting — visibilitychange/pagehide on
@@ -17,7 +19,7 @@ def start_session(db: Session, note_id: int, user_id: str) -> NoteSessionModel |
     note = get_owned(db, NoteModel, note_id, user_id)
     if not note:
         return None
-    session = NoteSessionModel(note_id=note_id, user_id=user_id, started_at=datetime.now(timezone.utc))
+    session = NoteSessionModel(note_id=note_id, user_id=user_id, started_at=datetime.now(UTC))
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -29,7 +31,7 @@ def end_session(db: Session, session_id: int, user_id: str) -> NoteSessionModel 
     session = get_owned(db, NoteSessionModel, session_id, user_id)
     if not session or session.ended_at is not None:
         return None
-    session.ended_at = datetime.now(timezone.utc)
+    session.ended_at = datetime.now(UTC)
     db.commit()
     db.refresh(session)
     return session
@@ -98,7 +100,9 @@ def get_time_by_note_for_date(db: Session, user_id: str, target_date) -> list[tu
     return [(note_id, int(total or 0)) for note_id, total in rows]
 
 
-def get_time_by_note_for_datetime_range(db: Session, user_id: str, start: datetime, end: datetime) -> list[tuple[int, int]]:
+def get_time_by_note_for_datetime_range(
+    db: Session, user_id: str, start: datetime, end: datetime
+) -> list[tuple[int, int]]:
     """Sum closed-session duration per note for the user, for sessions with ended_at in [start, end).
 
     Unlike get_time_by_note_for_date, start/end are explicit UTC instants
@@ -158,7 +162,7 @@ def reap_stale_sessions(db: Session, user_id: str) -> int:
 
     Returns the number of sessions closed.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=STALE_SESSION_HOURS)
+    cutoff = datetime.now(UTC) - timedelta(hours=STALE_SESSION_HOURS)
     stale_sessions = (
         db.query(NoteSessionModel)
         .filter(

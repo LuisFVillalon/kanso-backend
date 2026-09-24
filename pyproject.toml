@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "B008",  # FastAPI's Depends()/Query() in argument defaults is the framework idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Models are imported for their side effect of registering on Base.metadata,
+# after load_dotenv() has run.
+"alembic/env.py" = ["E402", "F401"]

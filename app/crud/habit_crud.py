@@ -1,14 +1,16 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import func
 from datetime import date, timedelta
-from app.models.habit_model import Habit
-from app.models.habit_log_model import HabitLog
-from app.schemas.habit_schema import HabitCreate
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
 from app.crud.base import get_owned
 from app.crud.tag_crud import get_or_create_tag
+from app.models.habit_log_model import HabitLog
+from app.models.habit_model import Habit
+from app.schemas.habit_schema import HabitCreate
 
 
-def _resolve_today(local_date: str | date | None) -> date:
+def resolve_today(local_date: str | date | None) -> date:
     """Resolve the caller's local calendar date, falling back to the server's.
 
     Habit logs are local-calendar events, but the server process may run in a
@@ -61,7 +63,7 @@ def _max_streak_from_dates(log_dates: set) -> int:
 def _apply_toggle_and_recalc(db: Session, habit: Habit, target_date: date, today: date) -> bool:
     """Toggle the log entry for target_date, recalculate streaks with a single DB read.
 
-    `today` is the caller's local calendar date (see _resolve_today).
+    `today` is the caller's local calendar date (see resolve_today).
     Returns True if today is now logged (used to set the logged_today attribute).
     """
     existing_log = (
@@ -90,7 +92,7 @@ def _apply_toggle_and_recalc(db: Session, habit: Habit, target_date: date, today
 
 def _stamp(habit: Habit, logged: bool) -> Habit:
     """Attach the transient logged_today attribute to a habit instance."""
-    setattr(habit, "logged_today", logged)
+    habit.logged_today = logged
     return habit
 
 
@@ -109,7 +111,7 @@ def get_habits(db: Session, user_id: str, local_date: str | None = None):
     if not habits:
         return habits
 
-    today = _resolve_today(local_date)
+    today = resolve_today(local_date)
     habit_ids = [h.id for h in habits]
     logged_today_ids = {
         row.habit_id
@@ -146,7 +148,7 @@ def update_habit(db: Session, habit_id: int, habit: HabitCreate, user_id: str, l
 
     db.commit()
     db.refresh(db_habit)
-    return _stamp(db_habit, _is_logged_today(db, habit_id, _resolve_today(local_date)))
+    return _stamp(db_habit, _is_logged_today(db, habit_id, resolve_today(local_date)))
 
 
 def delete_habit(db: Session, habit_id: int, user_id: str):
@@ -163,7 +165,7 @@ def toggle_habit_log(db: Session, habit_id: int, user_id: str, local_date: str |
     habit = get_owned(db, Habit, habit_id, user_id)
     if not habit:
         return None
-    today = _resolve_today(local_date)
+    today = resolve_today(local_date)
     is_logged_today = _apply_toggle_and_recalc(db, habit, today, today)
     db.commit()
     db.refresh(habit)
@@ -175,7 +177,7 @@ def toggle_habit_log_date(db: Session, habit_id: int, user_id: str, target_date:
     habit = get_owned(db, Habit, habit_id, user_id)
     if not habit:
         return None
-    today_logged = _apply_toggle_and_recalc(db, habit, target_date, _resolve_today(local_date))
+    today_logged = _apply_toggle_and_recalc(db, habit, target_date, resolve_today(local_date))
     db.commit()
     db.refresh(habit)
     return _stamp(habit, today_logged)
@@ -187,7 +189,7 @@ def get_habit_history(db: Session, habit_id: int, user_id: str, days: int = 30, 
     if not habit:
         return None
 
-    today = _resolve_today(local_date)
+    today = resolve_today(local_date)
     start = today - timedelta(days=days - 1)
 
     rows = (
@@ -217,7 +219,7 @@ def verify_and_reset_streaks(db: Session, user_id: str, local_date: str | None =
     if not habits:
         return {"reset_count": 0}
 
-    yesterday = _resolve_today(local_date) - timedelta(days=1)
+    yesterday = resolve_today(local_date) - timedelta(days=1)
     habit_ids = [h.id for h in habits]
 
     last_log_by_habit = {

@@ -1,15 +1,28 @@
+import logging
 import os
 import warnings
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database.database import check_db_connection
-from app.routers import tags_router, tasks_router, notes_router, user_router, calendar_router, habits_router, profile_router, drawing_router, debrief_router, demo_router
+from app.routers import (
+    calendar_router,
+    debrief_router,
+    demo_router,
+    drawing_router,
+    habits_router,
+    notes_router,
+    profile_router,
+    tags_router,
+    tasks_router,
+    user_router,
+)
 
 # Comma-separated list of allowed frontend origins, e.g.
-# "http://localhost:3000,https://task-master-mvp.vercel.app"
+# "http://localhost:3000,https://kanso-web-app.vercel.app"
 # New deployment targets (a staging URL, a custom domain) are added via env
 # var, not a source change.
 _DEFAULT_ORIGINS = "http://localhost:3000,https://kanso-web-app.vercel.app"
@@ -22,14 +35,15 @@ ALLOWED_ORIGINS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db_url = os.getenv("DATABASE_URL", "")
-    masked = db_url[:30] + "..." if len(db_url) > 30 else db_url
-    print(f"DATABASE_URL = {masked}")
+    # Log only the host, never credentials.
+    logging.getLogger("uvicorn.error").info(
+        "Database host: %s", urlparse(os.getenv("DATABASE_URL", "")).hostname
+    )
 
-    if not os.getenv("SUPABASE_JWT_SECRET"):
+    if not os.getenv("SUPABASE_URL"):
         warnings.warn(
-            "SUPABASE_JWT_SECRET is not set — all authenticated endpoints will return 500. "
-            "Add it to .env: Supabase dashboard → Project Settings → API → JWT Secret",
+            "SUPABASE_URL is not set — JWTs can't be verified, so every authenticated "
+            "endpoint will return 401.",
             stacklevel=1,
         )
 
@@ -41,7 +55,11 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="kanso API",
+    description="Tasks, notes, habits and daily-debrief API behind the kanso web app.",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,6 +80,12 @@ app.include_router(drawing_router.router)
 app.include_router(debrief_router.router)
 app.include_router(demo_router.router)
 
-@app.get("/")
+
+@app.get("/", include_in_schema=False)
 def read_root():
-    return {"message": "Welcome to TaskMaster Backend"}
+    return {"message": "kanso API. See /docs for the interactive reference."}
+
+
+@app.get("/health", include_in_schema=False)
+def health():
+    return {"status": "ok"}

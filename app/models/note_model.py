@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, func
+from sqlalchemy import Column, DateTime, Integer, String, Text, func
 from sqlalchemy.orm import relationship
+
 from app.database.database import Base
 from app.models.note_tag_model import note_tags
 

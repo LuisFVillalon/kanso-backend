@@ -1,12 +1,14 @@
-from pydantic import BaseModel
 from datetime import date
-from typing import Optional
+
+from pydantic import BaseModel, Field
+
+from app.schemas.limits import TITLE_MAX
 
 
 class CalendarSettingsUpdate(BaseModel):
-    title: Optional[str] = None
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
+    title: str | None = Field(None, max_length=TITLE_MAX)
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 class CalendarSettings(BaseModel):

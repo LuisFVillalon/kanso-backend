@@ -15,14 +15,13 @@ How it works
      • ES256 / RS256 (or any other alg) → verified via the Supabase JWKS
        endpoint: {SUPABASE_URL}/auth/v1/.well-known/jwks.json
 4. The decoded payload's "sub" claim is the user's UUID (matches auth.users.id
-   in Supabase). This UUID is used as the user_id FK in tasks, notes, tags, and
-   calendar_settings.
+   in Supabase). This UUID is used as the user_id on every user-owned row.
 
 Environment variables required
 ───────────────────────────────
-SUPABASE_JWT_SECRET  — found in Supabase dashboard → Project Settings → API
-                       → JWT Settings → JWT Secret
 SUPABASE_URL         — your project URL (e.g. https://xyz.supabase.co)
+SUPABASE_JWT_SECRET  — only needed if the project still signs with HS256:
+                       Supabase dashboard → Project Settings → API → JWT Secret
 """
 
 import logging
@@ -31,9 +30,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import jwt  # PyJWT
-from jwt import PyJWKClient
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +50,11 @@ def _auth_error(detail: str) -> HTTPException:
 @dataclass(frozen=True)
 class UserInfo:
     """Minimal user identity extracted from the verified JWT."""
-    id: str        # Supabase auth UUID (e.g. "a1b2c3d4-...")
-    email: str     # from the JWT "email" claim
-    provider: str  # primary auth provider: "email" | "google" | etc.
-                   # sourced from app_metadata.provider in the JWT payload
+    id: str             # Supabase auth UUID (e.g. "a1b2c3d4-...")
+    email: str          # from the JWT "email" claim ("" for anonymous users)
+    provider: str       # primary auth provider: "email" | "google" | "anonymous" | etc.
+                        # sourced from app_metadata.provider in the JWT payload
+    is_anonymous: bool  # True for "Try the demo" sandbox users (Supabase anonymous sign-in)
 
 
 @lru_cache(maxsize=1)
@@ -92,10 +92,7 @@ def _decode_token(token: str) -> dict:
     leeway=10 gives ±10 s of clock-skew tolerance between Supabase's auth
     server and the Fly.io VM — avoids spurious "token not yet valid" failures.
     """
-    unverified_header = jwt.get_unverified_header(token)
-    alg = unverified_header.get("alg", "")
-    kid = unverified_header.get("kid", "<none>")
-    log.info("AUTH | alg=%s kid=%s", alg, kid)
+    alg = jwt.get_unverified_header(token).get("alg", "")
 
     # Disable audience check (Supabase uses aud="authenticated" which we don't
     # need to enforce) but keep expiry and signature checks active.
@@ -150,33 +147,25 @@ def get_current_user(
             ...
     """
     if credentials is None:
-        log.warning("AUTH | rejected — no Authorization header")
         raise _auth_error("Missing Authorization header")
 
     token = credentials.credentials
     try:
         payload = _decode_token(token)
     except jwt.ExpiredSignatureError:
-        log.warning("AUTH | rejected — token expired")
-        raise _auth_error("Token has expired")
+        raise _auth_error("Token has expired") from None
     except jwt.InvalidTokenError as exc:
         log.warning("AUTH | rejected — invalid token: %s", exc)
-        raise _auth_error(f"Invalid token: {exc}")
-    except Exception:
-        log.exception("AUTH | unexpected error during token decode")
-        raise
+        raise _auth_error("Invalid token") from None
 
     user_id: str = payload.get("sub", "")
-    email: str = payload.get("email", "")
-    app_meta = payload.get("app_metadata") or {}
-    provider: str = app_meta.get("provider", "email")
-
     if not user_id:
-        log.warning("AUTH | rejected — token missing 'sub' claim; payload keys: %s", list(payload.keys()))
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token payload missing 'sub' claim",
-        )
+        raise _auth_error("Token payload missing 'sub' claim")
 
-    log.info("AUTH | accepted — user=%s provider=%s", user_id[:8] + "...", provider)
-    return UserInfo(id=user_id, email=email, provider=provider)
+    app_meta = payload.get("app_metadata") or {}
+    return UserInfo(
+        id=user_id,
+        email=payload.get("email") or "",
+        provider=app_meta.get("provider", "email"),
+        is_anonymous=bool(payload.get("is_anonymous", False)),
+    )

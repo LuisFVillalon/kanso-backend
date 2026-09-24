@@ -1,6 +1,8 @@
 from datetime import date, time
 from typing import Literal
+
 from pydantic import BaseModel
+
 from app.schemas.tag_schema import Tag as TagSchema
 
 

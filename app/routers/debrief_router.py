@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
+
 from app.core.auth import UserInfo, get_current_user
+from app.crud.debrief_crud import build_daily_debrief
 from app.database.database import get_db
 from app.schemas.debrief_schema import DailyDebriefReport
-from app.crud.debrief_crud import build_daily_debrief
 
 router = APIRouter()
 

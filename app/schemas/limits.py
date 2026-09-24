@@ -1,0 +1,16 @@
+"""Upper bounds on client-supplied fields.
+
+Generous enough for real use, small enough that one request can't park
+megabytes of junk in the database. Notes and drawings are the large ones:
+note images are stored inline as base64 data URLs (the editor caps each image
+at 2 MB), and the doodle canvas is saved as a PNG data URL.
+"""
+
+TITLE_MAX = 500
+TEXT_MAX = 10_000
+SHORT_MAX = 100
+TAG_NAME_MAX = 50
+COLOR_MAX = 32
+TAGS_PER_ITEM_MAX = 50
+NOTE_CONTENT_MAX = 10_000_000
+DRAWING_DATA_URL_MAX = 5_000_000

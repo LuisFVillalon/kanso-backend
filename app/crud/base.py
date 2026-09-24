@@ -1,11 +1,7 @@
-from typing import TypeVar
-
 from sqlalchemy.orm import Session
 
-ModelT = TypeVar("ModelT")
 
-
-def get_owned(db: Session, model: type[ModelT], record_id: int, user_id: str) -> ModelT | None:
+def get_owned[ModelT](db: Session, model: type[ModelT], record_id: int, user_id: str) -> ModelT | None:
     """Fetch a row by primary key, scoped to its owning user.
 
     Every user-owned table (tasks, notes, tags, habits, ...) is looked up the

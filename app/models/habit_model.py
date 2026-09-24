@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Numeric
+from sqlalchemy import Column, Integer, Numeric, String
 from sqlalchemy.orm import relationship
+
 from app.database.database import Base
 from app.models.habit_tag_model import habit_tags
 

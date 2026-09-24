@@ -1,6 +1,9 @@
 from decimal import Decimal
-from pydantic import BaseModel, field_validator
-from app.schemas.tag_schema import Tag
+
+from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.limits import TAGS_PER_ITEM_MAX, TITLE_MAX
+from app.schemas.tag_schema import Tag, TagCreate
 
 
 class HabitBase(BaseModel):
@@ -21,7 +24,10 @@ class HabitBase(BaseModel):
 
 
 class HabitCreate(HabitBase):
-    pass
+    # Limits live on the input model only, so rows saved before they existed
+    # can still be read back through the HabitResponse model.
+    title: str = Field(max_length=TITLE_MAX)
+    tags: list[TagCreate] = Field([], max_length=TAGS_PER_ITEM_MAX)
 
 
 class HabitResponse(HabitBase):
@@ -40,9 +46,9 @@ class HabitHistoryEntry(BaseModel):
 
 
 class HabitToggleDateRequest(BaseModel):
-    date: str
+    date: str = Field(max_length=10)
     # Caller's local calendar date ("YYYY-MM-DD"). Used for the streak
     # grace-period ("logged today or yesterday?") calc so a server/client
     # timezone gap can't roll "today" over early. Optional; the server falls
     # back to its own date.today() when absent.
-    local_date: str | None = None
+    local_date: str | None = Field(None, max_length=10)

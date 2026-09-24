@@ -3,13 +3,12 @@ Account-management endpoints.
 
 POST /update-password
   Updates the authenticated user's password via the Supabase Admin API.
-  Rejected with 403 for any user whose primary provider is not "email"
-  (e.g. Google OAuth accounts) — they don't have a local credential to update.
+  Rejected with 403 for OAuth accounts (e.g. Google) and demo sandboxes —
+  neither has a local credential to update.
 
 DELETE /delete-account
-  1. Removes all user data from the database (tasks, notes, tags, habits,
-     profile, drawing, calendar_settings, and the junction rows that
-     reference them).
+  1. Removes all user data from the database (every model in
+     account_crud.USER_OWNED_MODELS, plus the rows that cascade from them).
   2. Calls the Supabase Admin REST API to hard-delete the auth.users record so the
      e-mail address is freed and no orphaned auth rows remain.
 
@@ -19,48 +18,27 @@ SUPABASE_URL              — project URL (e.g. https://xyz.supabase.co)
 SUPABASE_SERVICE_ROLE_KEY — service-role key (Settings → API → service_role)
 """
 
-import os
-
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, field_validator
-from sqlalchemy import text
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
+from app.core.supabase_admin import delete_auth_user, update_auth_user
+from app.crud.account_crud import delete_user_rows
 from app.database.database import get_db
-from app.models.calendar_settings_model import CalendarSettings
-from app.models.drawing_model import Drawing
-from app.models.habit_model import Habit
-from app.models.note_model import Note
-from app.models.profile_model import Profile
-from app.models.tag_model import Tag
-from app.models.task_model import Task
 
 router = APIRouter()
 
 _OAUTH_PROVIDERS = {"google", "github", "facebook", "twitter", "apple"}
 
 
-def _supabase_admin_headers() -> dict[str, str]:
-    """Return headers for Supabase Admin API calls, or raise if not configured."""
-    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    if not service_key:
+def _reject_demo_sandbox(user: UserInfo) -> None:
+    """Demo sandboxes have no credentials to manage and are cleaned up automatically."""
+    if user.is_anonymous:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Server is not configured for account management (missing SUPABASE_SERVICE_ROLE_KEY).",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This is a demo sandbox. Sign up for your own account to do this.",
         )
-    return {"Authorization": f"Bearer {service_key}", "apikey": service_key}
-
-
-def _supabase_url() -> str:
-    url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    if not url:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Server is not configured for account management (missing SUPABASE_URL).",
-        )
-    return url
 
 
 # ── Password policy (mirrors frontend passwordValidation.ts) ─────────────────
@@ -130,7 +108,7 @@ def _check_password(password: str, email: str | None = None) -> None:
 # ── Update password ───────────────────────────────────────────────────────────
 
 class PasswordUpdateRequest(BaseModel):
-    new_password: str
+    new_password: str = Field(max_length=256)
 
     @field_validator("new_password")
     @classmethod
@@ -141,7 +119,7 @@ class PasswordUpdateRequest(BaseModel):
 
 
 @router.post("/update-password", status_code=204)
-async def update_password(
+def update_password(
     body: PasswordUpdateRequest,
     current_user: UserInfo = Depends(get_current_user),
 ):
@@ -154,6 +132,8 @@ async def update_password(
 
     Returns 422 if the password violates the NIST-aligned policy.
     """
+    _reject_demo_sandbox(current_user)
+
     if current_user.provider in _OAUTH_PROVIDERS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -165,59 +145,31 @@ async def update_password(
 
     _check_password(body.new_password, current_user.email)
 
-    headers = _supabase_admin_headers()
-    supabase_url = _supabase_url()
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.put(
-            f"{supabase_url}/auth/v1/admin/users/{current_user.id}",
-            headers=headers,
-            json={"password": body.new_password},
-        )
-
+    resp = update_auth_user(current_user.id, {"password": body.new_password})
     if resp.status_code not in (200, 204):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Password update failed: {resp.text}",
+            detail="Password update failed. Please try again.",
         )
 
 
 # ── Delete account ────────────────────────────────────────────────────────────
 
 @router.delete("/delete-account", status_code=204)
-async def delete_account(
+def delete_account(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    uid = current_user.id
+    _reject_demo_sandbox(current_user)
 
-    # ── 1. Remove junction rows that have no user_id column ──────────────────
-    # task_tags has no CASCADE, so we must clear it before deleting tasks/tags.
-    task_ids = [r[0] for r in db.execute(
-        text("SELECT id FROM tasks WHERE user_id = :uid"), {"uid": uid}
-    ).fetchall()]
-    if task_ids:
-        db.execute(
-            text("DELETE FROM task_tags WHERE task_id = ANY(:ids)"),
-            {"ids": task_ids},
-        )
-
-    # ── 2. Delete every row scoped to this user ───────────────────────────────
-    # note_tags/habit_tags cascade automatically; task_tags was cleared above.
-    # Adding a new user-owned table? Add its model here too.
-    for model in (Note, Task, Habit, Tag, Profile, Drawing, CalendarSettings):
-        db.query(model).filter(model.user_id == uid).delete(synchronize_session=False)
+    # ── 1. Delete every row scoped to this user ──────────────────────────────
+    delete_user_rows(db, current_user.id)
     db.commit()
 
-    # ── 3. Delete the Supabase auth user ─────────────────────────────────────
-    async with httpx.AsyncClient() as client:
-        resp = await client.delete(
-            f"{_supabase_url()}/auth/v1/admin/users/{uid}",
-            headers=_supabase_admin_headers(),
-        )
-
+    # ── 2. Delete the Supabase auth user ─────────────────────────────────────
+    resp = delete_auth_user(current_user.id)
     if resp.status_code not in (200, 204):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Supabase auth deletion failed: {resp.text}",
+            detail="Your data was deleted, but removing the login failed. Please try again.",
         )

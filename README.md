@@ -1,277 +1,101 @@
-# Task Master Backend
-TaskMaster Backend is a RESTful API built in Python/FastAPI that powers a personal productivity web application. It handles tasks, notes, habits, calendar settings, and user profiles — all scoped to the authenticated user via Supabase JWTs.
+# kanso-backend
 
-## Overview
-The backend uses FastAPI as the web framework, SQLAlchemy as the ORM, Alembic for database migrations, psycopg2-binary to connect to a PostgreSQL database hosted on Supabase, and Pydantic for data validation. Every endpoint requires a valid Supabase-issued JWT, which is verified server-side using either HS256 (symmetric) or ES256/RS256 (asymmetric JWKS) depending on the project configuration.
+The API behind [kanso](https://kanso-web-app.vercel.app), a productivity app for tasks, notes, habits and a daily debrief. It's built with FastAPI, SQLAlchemy 2, Alembic and Postgres (hosted on Supabase), and deployed on Fly.io.
 
-I built this backend to power a task manager web application, and have expanded it over time to add multi-user auth, notes, habit tracking, and account management on top of the original task/tag foundation.
+| Repository | Role |
+|---|---|
+| [kanso-frontend](https://github.com/LuisFVillalon/kanso-frontend) | Next.js web app (start here for the full architecture) |
+| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, profile, daily debrief, demo sandboxes |
+| [kanso-ai](https://github.com/LuisFVillalon/kanso-ai) | LLM-backed learning-resource recommendations |
 
-## Features
+Interactive API reference: `/docs` on any running instance.
 
-### Authentication
-- **JWT Verification**: All endpoints require a `Bearer` token in the `Authorization` header.
-- **Algorithm support**: HS256 (via `SUPABASE_JWT_SECRET`) and asymmetric ES256/RS256 (via the Supabase JWKS endpoint).
-- **User isolation**: Every data row is tied to the authenticated user's UUID, so users can never access each other's data.
+## Highlights
 
-### Task Management
-- **Full CRUD**: Create, read, update, and delete tasks.
-- **Toggle completion**: PATCH endpoint to flip completed status (records `completed_date` automatically).
-- **Bulk create**: POST an array of tasks at once (`/save-tasks-list`), used by the AI task-plan flow.
-- **Task hierarchy**: `parent_task_id` FK for parent-child task decomposition.
-- **Task properties**: title, description, category, completed, priority (1–5), due date/time, estimated time (hours), parent task reference, created date, completed date.
+- **Auth without owning passwords.** Users sign in with Supabase Auth; every endpoint verifies the Supabase JWT (ES256/RS256 via the project's JWKS, or HS256 with the project secret) and takes the user id from the token's `sub` claim. No endpoint accepts a user id from the client.
+- **Tenant isolation.** Every row carries a `user_id` and every query filters on it. Single-row lookups all go through one helper, `crud/base.py:get_owned`, so the ownership check can't be skipped in a new module.
+- **Database closed to direct access.** Supabase exposes `public` tables through an auto-generated REST API. A migration enables Row Level Security and revokes the `anon`/`authenticated` grants on every table (including future ones), so the public Supabase key can't reach the data. The backend connects as the table owner and is unaffected.
+- **Per-visitor demo sandboxes.** `POST /demo/seed` accepts only Supabase *anonymous* users and fills their sandbox with sample data dated relative to the visitor's local day. A background task deletes sandboxes older than a day, both their rows and their auth users.
+- **Timezone-correct logic.** The server runs in UTC. Habit streaks, "due today" and the daily debrief take the caller's `local_date`/`local_time` rather than the server clock, and note time totals take the caller's UTC offset.
+- **A rule-based daily debrief.** `GET /daily-debrief` combines overdue and due-today tasks, today's completions, habit status and workload capacity (committed vs. available minutes, respecting rest days) into a prioritized "focus next" list. No LLM is involved.
+- **Input bounds and rate limits.** Request schemas cap field lengths and list sizes; demo seeding is rate-limited per user.
 
-### Tag Management
-- **Full CRUD**: Create, read, update, and delete tags (per-user).
-- **Tag properties**: unique name and optional color.
-- **Cross-entity tagging**: Tags can be applied to tasks, notes, and habits via many-to-many join tables.
+## Data model
 
-### Notes Management
-- **Full CRUD**: Create, read, update, and delete notes.
-- **Note properties**: title, content (rich text), created date, updated date, associated tags.
-- **Time tracking**: Note-editing time is tracked via open/close session events (`note_sessions`), not a running counter. Endpoints to start/end a session and to read totals (per-note, all-notes, or over a date range).
-- **Stale-session reaping**: `POST /note-session/reap` force-closes any of the user's own sessions left open past a staleness window (crashed tab, force-quit) at zero duration, so a crash doesn't inflate a note's tracked time.
-
-### Habit Tracking
-- **Full CRUD**: Create, read, update, and delete habits.
-- **Toggle today**: PATCH to mark a habit complete/incomplete for today — updates `current_streak` and `max_streak`.
-- **Timezone-safe "today"**: the read/toggle/verify/history endpoints accept the caller's local calendar date (`?local_date=YYYY-MM-DD`, or `local_date` in the toggle-date body) so a server/client timezone gap can't roll "today" over early and drop a habit's done-today state.
-- **Toggle by date**: PATCH to retroactively toggle any past date — recalculates streaks from scratch.
-- **Streak verification**: POST `/verify-streaks` resets `current_streak` to 0 for habits whose last log is older than yesterday.
-- **History**: GET 30-day logged/not-logged history for a habit.
-- **Habit properties**: title, current streak, max streak, estimated time (hours), associated tags.
-
-### Calendar Settings
-- **Get/upsert**: Retrieve or update the authenticated user's calendar display preferences (title, start date, end date).
-
-### Profile
-- **Get/upsert**: Retrieve or save the authenticated user's profile data — display name, avatar, theme accent, page style, rest days, day-start/shutoff times, dashboard layout order/sizes, app mode, and other UI preferences.
-
-### Drawing
-- **Get/upsert/delete**: A single freeform doodle canvas per user, stored as an image data URL (`GET /get-drawing`, `POST /save-drawing`, `DELETE /delete-drawing`).
-
-### Daily Debrief
-- **GET `/daily-debrief`**: Computes a same-day summary for the authenticated user — overdue tasks, tasks due today, tasks completed today, notes worked on today, habit status, workload capacity (committed vs. available minutes, rest-day awareness), and a prioritized "focus next" list. Purely rule-based (no external AI call); accepts the caller's local date/time as query params so a server/client timezone mismatch can't misclassify tasks as overdue.
-
-### Account Management
-- **Update password**: POST `/update-password` — enforces a NIST-aligned password policy (12-char minimum, common-password blacklist, no email-in-password). Blocked for OAuth accounts (Google, GitHub, etc.).
-- **Delete account**: DELETE `/delete-account` — removes all user data (tasks, notes, tags, habits, profile, drawing, calendar settings) from the database and hard-deletes the Supabase auth record via the Admin API.
-- **Claim data**: POST `/claim-data` — one-time migration that assigns any orphaned rows (pre-auth data) to the newly signed-in user.
-
-## Tech Stack
-- **Language:** Python
-- **Framework:** FastAPI
-- **ORM:** SQLAlchemy
-- **Migrations:** Alembic
-- **Database:** PostgreSQL (hosted on Supabase)
-- **Database Driver:** psycopg2-binary
-- **Auth:** Supabase JWT (PyJWT + cryptography for ES256/RS256)
-- **Data Validation:** Pydantic v2
-- **HTTP Client:** httpx (for Supabase Admin API calls)
-- **Middleware:** CORS (localhost:3000 + Vercel production URL, configurable via `ALLOWED_ORIGINS`)
-
-## Project Structure
-```
-taskmaster-backend/
-├── Dockerfile
-├── alembic.ini
-├── requirements.txt
-├── alembic/                         # Database migration scripts
-│   ├── env.py
-│   └── versions/                    # Migration history (tasks, notes, habits, auth, etc.)
-└── app/                             # Main application
-    ├── main.py                      # FastAPI app, CORS config, router registration
-    ├── core/
-    │   ├── auth.py                  # JWT verification dependency (HS256 + JWKS)
-    │   └── http_utils.py            # require_found() helper (404 on None)
-    ├── crud/                        # Data access layer
-    │   ├── base.py                  # Shared CRUD helpers
-    │   ├── calendar_crud.py
-    │   ├── debrief_crud.py
-    │   ├── drawing_crud.py
-    │   ├── habit_crud.py
-    │   ├── note_crud.py
-    │   ├── note_session_crud.py
-    │   ├── profile_crud.py
-    │   ├── tag_crud.py
-    │   └── task_crud.py
-    ├── database/
-    │   └── database.py              # SQLAlchemy engine, session, Base, connection check
-    ├── models/                      # SQLAlchemy ORM models
-    │   ├── calendar_settings_model.py
-    │   ├── drawing_model.py
-    │   ├── habit_model.py
-    │   ├── habit_log_model.py
-    │   ├── habit_tag_model.py       # habits ↔ tags join table
-    │   ├── note_model.py
-    │   ├── note_session_model.py    # note open/close time-tracking events
-    │   ├── note_tag_model.py        # notes ↔ tags join table
-    │   ├── profile_model.py
-    │   ├── tag_model.py
-    │   ├── task_model.py
-    │   └── task_tag_model.py        # tasks ↔ tags join table
-    ├── routers/                     # FastAPI route handlers
-    │   ├── calendar_router.py
-    │   ├── debrief_router.py        # Daily debrief summary
-    │   ├── drawing_router.py        # Doodle canvas
-    │   ├── habits_router.py
-    │   ├── notes_router.py          # Notes CRUD + note-session time tracking
-    │   ├── profile_router.py
-    │   ├── tags_router.py
-    │   ├── tasks_router.py
-    │   └── user_router.py           # Password update + account deletion
-    └── schemas/                     # Pydantic request/response models
-        ├── calendar_schema.py
-        ├── debrief_schema.py
-        ├── drawing_schema.py
-        ├── habit_schema.py
-        ├── note_schema.py
-        ├── note_session_schema.py
-        ├── profile_schema.py
-        ├── tag_schema.py
-        └── task_schema.py
+```mermaid
+erDiagram
+    TASKS }o--o{ TAGS : task_tags
+    NOTES }o--o{ TAGS : note_tags
+    HABITS }o--o{ TAGS : habit_tags
+    HABITS ||--o{ HABIT_LOGS : "one per logged day"
+    NOTES ||--o{ NOTE_SESSIONS : "editing time"
+    TASKS ||--o{ TASKS : "parent / subtasks"
 ```
 
-## Installation & Setup
+Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker) and `drawings` (the doodle canvas). Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
 
-### Prerequisites
-- Python 3.10 or higher
-- A Supabase project with a PostgreSQL database
-- pip (Python package installer)
+## Project structure
 
-### Installation Steps
-1. **Clone the repository:**
-   ```
-   git clone <repository-url>
-   cd taskmaster-backend
-   ```
+```
+app/
+  main.py        # App, CORS, router registration, /health
+  core/          # auth.py (JWT verification), supabase_admin.py, rate_limit.py, http_utils.py
+  routers/       # One per domain; thin handlers that depend on get_current_user + get_db
+  crud/          # Queries and business logic (streaks, debrief, demo seed, account deletion)
+  models/        # SQLAlchemy models
+  schemas/       # Pydantic request/response models; limits.py holds the input bounds
+  database/      # Engine and session setup (Supabase pooler / pgBouncer-safe)
+alembic/         # Migrations (date-prefixed); run automatically on every deploy
+```
 
-2. **Create a virtual environment:**
-   ```
-   python -m venv venv
-   venv\Scripts\activate   # Windows
-   source venv/bin/activate  # macOS/Linux
-   ```
+Routes use verb-style paths (`/get-tasks`, `/create-task`, `/update-task/{id}`, `/del-task/{id}`). Each domain has one file per layer: `routers/` → `crud/` → `models/` + `schemas/`.
 
-3. **Install dependencies:**
-   ```
-   pip install -r requirements.txt
-   ```
+## Endpoints
 
-4. **Configure environment variables:**
-   Create a `.env` file in the root directory:
-   ```
-   DATABASE_URL=postgresql://user:password@host:5432/dbname
-   SUPABASE_URL=https://<project-id>.supabase.co
-   SUPABASE_JWT_SECRET=<jwt-secret>
-   SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
-   ```
-   All values are available in the Supabase dashboard under **Project Settings → API**.
+All endpoints require `Authorization: Bearer <supabase-jwt>`.
 
-5. **Run database migrations:**
-   ```
-   alembic upgrade head
-   ```
+| Area | Endpoints |
+|---|---|
+| Tasks | `GET /get-tasks` · `POST /create-task` · `PUT /update-task/{id}` · `PATCH /update-task-status/{id}` · `DELETE /del-task/{id}` |
+| Tags | `GET /get-tags` · `POST /create-tags` · `PUT /update-tag/{id}` · `DELETE /del-tag/{id}` |
+| Notes | `GET /get-notes` · `POST /create-note` · `PUT /update-note/{id}` · `DELETE /del-note/{id}` |
+| Note time | `POST /note-session/start` · `PUT /note-session/end/{id}` · `GET /note-session/total/{note_id}` · `GET /note-session/totals` · `GET /note-session/totals-range` · `POST /note-session/reap` |
+| Habits | `GET /get-habits` · `POST /create-habit` · `PUT /update-habit/{id}` · `DELETE /del-habit/{id}` · `PATCH /toggle-habit/{id}` · `PATCH /toggle-habit-date/{id}` · `POST /verify-streaks` · `GET /habit-history/{id}` |
+| Daily debrief | `GET /daily-debrief?local_date=&local_time=` |
+| Profile & settings | `GET /get-profile` · `POST /save-profile` · `GET /get-calendar-settings` · `PATCH /update-calendar-settings` |
+| Doodle canvas | `GET /get-drawing` · `POST /save-drawing` · `DELETE /delete-drawing` |
+| Account | `POST /update-password` (email accounts only) · `DELETE /delete-account` |
+| Demo | `POST /demo/seed?local_date=` (anonymous users only) |
 
-6. **Run the application:**
-   ```
-   python -m uvicorn app.main:app --reload
-   ```
-   The server will start at `http://localhost:8000`.
+`GET /health` is public and used by Fly.io health checks.
 
-## Environment Variables
+## Running locally
+
+Requires Python 3.12+ and a Postgres database (a Supabase project works as-is).
+
+```bash
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+# create .env (see below)
+alembic upgrade head
+uvicorn app.main:app --reload     # http://localhost:8000/docs
+```
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | Yes | PostgreSQL connection string (Session-mode pooler URL recommended) |
-| `SUPABASE_URL` | Yes | Supabase project URL |
-| `SUPABASE_JWT_SECRET` | Yes | JWT secret for HS256 token verification |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes (account mgmt) | Service-role key for Admin API calls (password update, account deletion) |
-| `SUPABASE_JWKS_URL` | No | Override JWKS endpoint URL (defaults to `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`) |
-| `ALLOWED_ORIGINS` | No | Comma-separated list of allowed CORS origins (defaults to `http://localhost:3000,https://kanso-web-app.vercel.app`) |
+| `DATABASE_URL` | Yes | Postgres connection string. On Supabase, use the pooler URL (the direct `db.*` host is IPv6-only). |
+| `SUPABASE_URL` | Yes | Supabase project URL, used to fetch the JWKS for token verification |
+| `SUPABASE_SERVICE_ROLE_KEY` | For account & demo endpoints | Service-role key for the Supabase Admin API |
+| `SUPABASE_JWT_SECRET` | Only for HS256 projects | Legacy symmetric JWT secret |
+| `ALLOWED_ORIGINS` | No | Comma-separated CORS origins (default: `http://localhost:3000,https://kanso-web-app.vercel.app`) |
 
-## API Endpoints
+Linting: `ruff check .` (config in `pyproject.toml`).
 
-All endpoints require `Authorization: Bearer <supabase-jwt>`. Interactive docs available at `http://localhost:8000/docs`.
+## Deployment
 
-### Tasks
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/get-tasks` | Return all tasks for the authenticated user |
-| `POST` | `/create-task` | Create a new task |
-| `PUT` | `/update-task/{task_id}` | Replace all fields of a task |
-| `PATCH` | `/update-task-status/{task_id}` | Toggle completion status |
-| `DELETE` | `/del-task/{task_id}` | Delete a task |
-| `POST` | `/save-tasks-list` | Bulk-insert an array of tasks |
-| `POST` | `/claim-data` | Assign orphaned rows to the current user (one-time migration) |
-
-### Tags
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/get-tags` | Return all tags for the authenticated user |
-| `POST` | `/create-tags` | Create a new tag |
-| `PUT` | `/update-tag/{tag_id}` | Update a tag's name and color |
-| `DELETE` | `/del-tag/{tag_id}` | Delete a tag |
-
-### Notes
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/get-notes` | Return all notes for the authenticated user |
-| `POST` | `/create-note` | Create a new note |
-| `PUT` | `/update-note/{note_id}` | Update a note's title, content, and tags |
-| `DELETE` | `/del-note/{note_id}` | Delete a note |
-| `POST` | `/note-session/start` | Start an editing session for a note |
-| `PUT` | `/note-session/end/{session_id}` | Close an open editing session |
-| `GET` | `/note-session/total/{note_id}` | Total seconds spent on a note (closed sessions) |
-| `GET` | `/note-session/totals` | Total seconds spent per note, across all notes |
-| `GET` | `/note-session/totals-range?start_date=&end_date=` | Total seconds spent per note within a date range |
-| `POST` | `/note-session/reap` | Force-close the user's own stale open sessions |
-
-### Habits
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/get-habits?local_date=` | Return all habits with today's completion state |
-| `POST` | `/create-habit` | Create a new habit |
-| `PUT` | `/update-habit/{habit_id}` | Update a habit's title and tags |
-| `DELETE` | `/del-habit/{habit_id}` | Delete a habit and all its logs |
-| `PATCH` | `/toggle-habit/{habit_id}?local_date=` | Toggle today's completion (updates streaks) |
-| `PATCH` | `/toggle-habit-date/{habit_id}` | Toggle completion for a specific date (`local_date` in body) |
-| `POST` | `/verify-streaks?local_date=` | Reset streaks for habits not completed yesterday |
-| `GET` | `/habit-history/{habit_id}?local_date=` | Return 30-day completion history |
-
-### Calendar Settings
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/get-calendar-settings` | Return the user's calendar settings |
-| `PATCH` | `/update-calendar-settings` | Update calendar settings |
-
-### Profile
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/get-profile` | Return the user's profile |
-| `POST` | `/save-profile` | Upsert the user's profile |
-
-### Drawing
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/get-drawing` | Return the user's saved doodle canvas |
-| `POST` | `/save-drawing` | Upsert the doodle canvas |
-| `DELETE` | `/delete-drawing` | Delete the doodle canvas |
-
-### Daily Debrief
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/daily-debrief?local_date=&local_time=` | Return the day's task/habit/workload summary and focus-next recommendations |
-
-### Account Management
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/update-password` | Update password (email accounts only) |
-| `DELETE` | `/delete-account` | Delete all user data (tasks, notes, tags, habits, profile, drawing, calendar settings) and the Supabase auth record |
-
-### Root
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Welcome message |
+`fly deploy` builds the Docker image; on start the container runs `alembic upgrade head` and then uvicorn. The Fly region should match the database's region, since each request makes several database round trips. One machine is kept warm to avoid cold starts.
 
 ## Author
-[Luis Fernando Villalon] — Built as a learning project for backend development with FastAPI, extended to include multi-user auth, habit tracking, and account management.
+
+Luis Fernando Villalon, San Diego State University. [github.com/LuisFVillalon](https://github.com/LuisFVillalon)

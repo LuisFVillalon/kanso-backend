@@ -1,6 +1,9 @@
 from datetime import datetime
-from pydantic import BaseModel
-from app.schemas.tag_schema import Tag
+
+from pydantic import BaseModel, Field
+
+from app.schemas.limits import NOTE_CONTENT_MAX, TAGS_PER_ITEM_MAX, TITLE_MAX
+from app.schemas.tag_schema import Tag, TagCreate
 
 
 class NoteBase(BaseModel):
@@ -10,13 +13,17 @@ class NoteBase(BaseModel):
 
 
 class NoteCreate(NoteBase):
-    pass
+    # Limits live on the input models only, so rows saved before they existed
+    # can still be read back through the Note response model.
+    title: str = Field("Untitled Note", max_length=TITLE_MAX)
+    content: str = Field("", max_length=NOTE_CONTENT_MAX)
+    tags: list[TagCreate] = Field([], max_length=TAGS_PER_ITEM_MAX)
 
 
 class NoteUpdate(BaseModel):
-    title: str | None = None
-    content: str | None = None
-    tags: list[Tag] | None = None
+    title: str | None = Field(None, max_length=TITLE_MAX)
+    content: str | None = Field(None, max_length=NOTE_CONTENT_MAX)
+    tags: list[TagCreate] | None = Field(None, max_length=TAGS_PER_ITEM_MAX)
 
 
 class Note(NoteBase):

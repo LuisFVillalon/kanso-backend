@@ -1,19 +1,24 @@
 app = "taskmaster-backend-bhccbw"
+# Keep this in the same region as the Supabase database: each request makes
+# several DB round trips, so keeping the API beside the database beats
+# keeping it beside the user.
 primary_region = "ams"
 
 [http_service]
 auto_start_machines = true
-auto_stop_machines = true
+auto_stop_machines = "stop"
 force_https = true
 internal_port = 8080
-min_machines_running = 0
+# Keep one machine warm: a stopped machine takes ~10 s to boot, which is what
+# a first-time visitor clicking "Try the demo" would otherwise wait through.
+min_machines_running = 1
 processes = [ "app" ]
 
   [[http_service.checks]]
   grace_period = "10s"
   interval = "30s"
   method = "GET"
-  path = "/"
+  path = "/health"
   timeout = "5s"
 
 [[vm]]

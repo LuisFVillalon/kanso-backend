@@ -1,20 +1,22 @@
+from datetime import date as date_type
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from datetime import date as date_type
+
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
-from app.database.database import get_db
-from app.schemas.habit_schema import HabitCreate, HabitResponse, HabitHistoryEntry, HabitToggleDateRequest
 from app.crud.habit_crud import (
-    get_habits,
     create_habit,
-    update_habit,
     delete_habit,
-    toggle_habit_log,
-    verify_and_reset_streaks,
     get_habit_history,
+    get_habits,
+    toggle_habit_log,
     toggle_habit_log_date,
+    update_habit,
+    verify_and_reset_streaks,
 )
+from app.database.database import get_db
+from app.schemas.habit_schema import HabitCreate, HabitHistoryEntry, HabitResponse, HabitToggleDateRequest
 
 router = APIRouter()
 
@@ -116,7 +118,9 @@ def toggle_habit_completion_date(
     try:
         target = date_type.fromisoformat(payload.date)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date format. Use YYYY-MM-DD.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date format. Use YYYY-MM-DD."
+        ) from None
     # Bound "future" by the caller's local date when supplied — the server's
     # own date.today() may already be tomorrow relative to the user.
     local_today = date_type.today()

@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
+from app.crud.calendar_crud import get_calendar_settings, upsert_calendar_settings
 from app.database.database import get_db
 from app.schemas.calendar_schema import CalendarSettings, CalendarSettingsUpdate
-from app.crud.calendar_crud import get_calendar_settings, upsert_calendar_settings
 
 router = APIRouter()
 

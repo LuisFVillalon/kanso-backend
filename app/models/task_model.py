@@ -1,7 +1,9 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Time, Numeric, ForeignKey, func, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Time, func
 from sqlalchemy.orm import relationship
+
 from app.database.database import Base
 from app.models.task_tag_model import task_tags
+
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -24,8 +26,9 @@ class Task(Base):
         secondary=task_tags,
         back_populates="tasks"
     )
-    subtasks = relationship(
+    # Many-to-one link to the parent; the backref gives each task its subtasks.
+    parent_task = relationship(
         "Task",
         remote_side=[id],
-        backref="parent_task"
+        backref="subtasks",
     )

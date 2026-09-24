@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+
 from app.models.profile_model import Profile
 from app.schemas.profile_schema import ProfileSave
 

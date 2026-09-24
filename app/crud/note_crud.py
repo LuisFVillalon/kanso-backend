@@ -1,9 +1,11 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy.orm import Session
-from app.models.note_model import Note as NoteModel
-from app.schemas.note_schema import NoteCreate, NoteUpdate
+
 from app.crud.base import get_owned
 from app.crud.tag_crud import get_or_create_tag
+from app.models.note_model import Note as NoteModel
+from app.schemas.note_schema import NoteCreate, NoteUpdate
 
 
 def get_notes(db: Session, user_id: str):
@@ -13,7 +15,7 @@ def get_notes(db: Session, user_id: str):
 
 def create_note(db: Session, note: NoteCreate, user_id: str):
     """Create and persist a new note, auto-creating any new tags."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     db_note = NoteModel(
         title=note.title,
         content=note.content,
@@ -39,7 +41,7 @@ def update_note(db: Session, note_id: int, note: NoteUpdate, user_id: str):
         db_note.title = note.title
     if note.content is not None:
         db_note.content = note.content
-    db_note.updated_date = datetime.now(timezone.utc)
+    db_note.updated_date = datetime.now(UTC)
 
     if note.tags is not None:
         db_note.tags.clear()

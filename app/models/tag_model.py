@@ -1,9 +1,11 @@
 from sqlalchemy import Column, Integer, String, UniqueConstraint
-from app.database.database import Base
 from sqlalchemy.orm import relationship
-from app.models.task_tag_model import task_tags
-from app.models.note_tag_model import note_tags
+
+from app.database.database import Base
 from app.models.habit_tag_model import habit_tags
+from app.models.note_tag_model import note_tags
+from app.models.task_tag_model import task_tags
+
 
 class Tag(Base):
     __tablename__ = "tags"
