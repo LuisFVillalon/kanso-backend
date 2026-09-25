@@ -1,8 +1,8 @@
 app = "taskmaster-backend-bhccbw"
-# Keep this in the same region as the Supabase database: each request makes
-# several DB round trips, so keeping the API beside the database beats
-# keeping it beside the user.
-primary_region = "ams"
+# Ashburn, VA: beside the Supabase database (aws us-east-1). Each request
+# makes several DB round trips, so the API must sit next to the database;
+# from Amsterdam every query crossed the Atlantic (~2 s for the daily debrief).
+primary_region = "iad"
 
 [http_service]
 auto_start_machines = true

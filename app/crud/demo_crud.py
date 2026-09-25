@@ -31,9 +31,9 @@ def _make_tag(db: Session, name: str, color: str, user_id: str) -> Tag:
     return tag
 
 
-# Note bodies are Tiptap HTML, the same format the editor saves.
+# Note bodies are Tiptap HTML, the same format the editor saves. They start
+# below the title, which the editor renders separately from the body.
 _NOTE_BST = """
-<h2>Binary search trees</h2>
 <p>Every node's left subtree holds <mark>smaller keys</mark> and its right subtree
 <mark>larger keys</mark>, so a lookup discards half the remaining tree at each step.</p>
 <h3>Operations</h3>
@@ -49,7 +49,6 @@ variants like <em>AVL</em> and <em>red-black trees</em> keep h = O(log n).</p>
 """
 
 _NOTE_RETRO = """
-<h2>Sprint 14 retro</h2>
 <h3>What went well</h3>
 <ul>
   <li>Shipped the new dashboard two days early</li>
@@ -64,7 +63,6 @@ _NOTE_RETRO = """
 """
 
 _NOTE_RECIPE = """
-<h2>Weeknight stir fry</h2>
 <p>About 20 minutes, serves two.</p>
 <ol>
   <li>Slice chicken thigh thin and toss with soy sauce and cornstarch</li>
@@ -75,7 +73,6 @@ _NOTE_RECIPE = """
 """
 
 _NOTE_HABITS = """
-<h2>Atomic Habits: key ideas</h2>
 <ul>
   <li><strong>Habit stacking:</strong> attach a new habit to one you already do</li>
   <li><strong>Make it easy:</strong> reduce friction for good habits, add it for bad ones</li>

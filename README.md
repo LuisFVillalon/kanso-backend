@@ -94,7 +94,7 @@ Linting: `ruff check .` (config in `pyproject.toml`).
 
 ## Deployment
 
-`fly deploy` builds the Docker image; on start the container runs `alembic upgrade head` and then uvicorn. The Fly region should match the database's region, since each request makes several database round trips. One machine is kept warm to avoid cold starts.
+`fly deploy` builds the Docker image; on start the container runs `alembic upgrade head` and then uvicorn. The app runs in Fly's `iad` region (Ashburn), beside the database in AWS `us-east-1`, since each request makes several database round trips. One machine is kept warm to avoid cold starts.
 
 ## Author
 
