@@ -1,4 +1,5 @@
 from datetime import date
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -38,15 +39,12 @@ def update_calendar_settings(
 def read_calendar_activity(
     start_date: date = Query(..., description="First local calendar day of the range (YYYY-MM-DD)."),
     end_date: date = Query(..., description="Last local calendar day of the range, inclusive (YYYY-MM-DD)."),
-    utc_offset_minutes: int = Query(
-        0,
-        ge=-14 * 60,
-        le=14 * 60,
+    tz: str = Query(
+        ...,
         description=(
-            "The caller's UTC offset as returned by JS Date.getTimezoneOffset() "
-            "(minutes to add to local time to reach UTC; e.g. 420 for US Pacific "
-            "in summer). Task completions and note sessions are matched against "
-            "the UTC instants the caller's local days cover. Omitted: UTC days."
+            "The caller's IANA time zone, e.g. America/Los_Angeles (the browser's "
+            "Intl.DateTimeFormat().resolvedOptions().timeZone). Task completions and "
+            "note sessions are matched against the UTC instants the caller's local days cover."
         ),
     ),
     current_user: UserInfo = Depends(get_current_user),
@@ -62,4 +60,10 @@ def read_calendar_activity(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"The range may span at most {ACTIVITY_RANGE_MAX_DAYS} days.",
         )
-    return get_calendar_activity(db, current_user.id, start_date, end_date, utc_offset_minutes)
+    try:
+        zone = ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Unknown time zone: {tz!r}."
+        ) from None
+    return get_calendar_activity(db, current_user.id, start_date, end_date, zone)

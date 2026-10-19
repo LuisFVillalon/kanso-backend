@@ -1,4 +1,5 @@
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
@@ -16,21 +17,13 @@ from app.schemas.activity_schema import (
 )
 
 
-def _local_range_bounds_utc(start: date, end: date, utc_offset_minutes: int) -> tuple[datetime, datetime]:
-    """UTC [start, end) instants covering the caller's local days start..end inclusive.
-
-    Same offset convention as /note-session/totals-range: utc_offset_minutes
-    is JS Date.getTimezoneOffset(), the minutes to add to local time to reach UTC.
-    """
-    offset = timedelta(minutes=utc_offset_minutes)
-    return (
-        datetime.combine(start, time.min) + offset,
-        datetime.combine(end + timedelta(days=1), time.min) + offset,
-    )
+def _local_midnight_utc(day: date, tz: ZoneInfo) -> datetime:
+    """The naive UTC instant at which the local day `day` starts in `tz`."""
+    return datetime.combine(day, time.min, tzinfo=tz).astimezone(UTC).replace(tzinfo=None)
 
 
 def get_calendar_activity(
-    db: Session, user_id: str, start: date, end: date, utc_offset_minutes: int = 0
+    db: Session, user_id: str, start: date, end: date, tz: ZoneInfo
 ) -> CalendarActivity:
     """Everything the user planned or did across local days start..end inclusive:
     tasks due in the range, tasks completed in it, note editing sessions and
@@ -38,9 +31,11 @@ def get_calendar_activity(
 
     Due dates and habit log dates are already local calendar dates. Completion
     and session timestamps are UTC, so they are matched against the UTC
-    instants the caller's local range covers.
+    instants the caller's local range covers in time zone `tz`. Each end is
+    resolved on its own, so a range that crosses a DST change stays exact.
     """
-    range_start_utc, range_end_utc = _local_range_bounds_utc(start, end, utc_offset_minutes)
+    range_start_utc = _local_midnight_utc(start, tz)
+    range_end_utc = _local_midnight_utc(end + timedelta(days=1), tz)
 
     active_tasks = (
         db.query(TaskModel)

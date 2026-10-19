@@ -17,8 +17,7 @@ from tests.conftest import OTHER_USER_ID, USER_ID
 WEEK_START = date(2026, 10, 12)
 WEEK_END = date(2026, 10, 18)
 WEEK = {"start_date": WEEK_START.isoformat(), "end_date": WEEK_END.isoformat()}
-# US Pacific in summer, as JS Date.getTimezoneOffset() reports it.
-PACIFIC_OFFSET = 420
+PACIFIC = "America/Los_Angeles"
 
 
 def _task(db, title, due: date | None = None, user_id=USER_ID, archived=False, **fields) -> Task:
@@ -59,7 +58,7 @@ def _habit(db, title, logged: list[date], user_id=USER_ID, **fields) -> Habit:
 
 
 def _activity(client, **params):
-    resp = client.get("/get-calendar-activity", params={**WEEK, **params})
+    resp = client.get("/get-calendar-activity", params={**WEEK, "tz": "UTC", **params})
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -104,8 +103,35 @@ def test_completed_tasks_are_bucketed_by_the_callers_local_days(client, db):
     assert [t["title"] for t in utc_week] == ["Late Sunday Pacific", "Overdue, finished"]
     assert utc_week[0]["completed_date"] == "2026-10-12T03:00:00Z"
 
-    pacific_week = _activity(client, utc_offset_minutes=PACIFIC_OFFSET)["completed_tasks"]
+    pacific_week = _activity(client, tz=PACIFIC)["completed_tasks"]
     assert [t["title"] for t in pacific_week] == ["Overdue, finished"]
+
+
+def test_range_crossing_a_dst_change_resolves_each_end_in_its_own_offset(client, db):
+    note = _note(db, "Year in review")
+    # Pacific is UTC-8 (PST) on Dec 31 and Jan 1, though UTC-7 (PDT) mid-year.
+    # 23:30 PST on Dec 31, 2025: the night before the year.
+    _task(db, "New Year's Eve 2025", completed=True, completed_date=datetime(2026, 1, 1, 7, 30))
+    _session(db, note, datetime(2026, 1, 1, 7, 0), datetime(2026, 1, 1, 7, 45))
+    # 23:30 PST on Dec 31, 2026: the year's last hour.
+    _task(db, "New Year's Eve 2026", completed=True, completed_date=datetime(2027, 1, 1, 7, 30))
+    _session(db, note, datetime(2027, 1, 1, 7, 0), datetime(2027, 1, 1, 7, 45))
+    # A week whose Sunday, Nov 1, 2026, falls back from PDT to PST.
+    # 23:30 PST on Sunday, and 23:30 PDT the Sunday before.
+    _task(db, "Fall-back Sunday night", completed=True, completed_date=datetime(2026, 11, 2, 7, 30))
+    _task(db, "Sunday before", completed=True, completed_date=datetime(2026, 10, 26, 6, 30))
+    db.commit()
+
+    year = _activity(client, start_date="2026-01-01", end_date="2026-12-31", tz=PACIFIC)
+    assert [t["title"] for t in year["completed_tasks"]] == [
+        "Sunday before",
+        "Fall-back Sunday night",
+        "New Year's Eve 2026",
+    ]
+    assert [s["started_at"] for s in year["note_sessions"]] == ["2027-01-01T07:00:00Z"]
+
+    week = _activity(client, start_date="2026-10-26", end_date="2026-11-01", tz=PACIFIC)
+    assert [t["title"] for t in week["completed_tasks"]] == ["Fall-back Sunday night"]
 
 
 def test_completing_a_task_records_when_and_uncompleting_clears_it(client, db):
@@ -187,14 +213,16 @@ def test_other_users_see_none_of_it(client, db):
 def test_range_validation(client):
     def status(start, end, **params):
         return client.get(
-            "/get-calendar-activity", params={"start_date": start, "end_date": end, **params}
+            "/get-calendar-activity", params={"start_date": start, "end_date": end, "tz": "UTC", **params}
         ).status_code
 
     assert status("2026-10-18", "2026-10-12") == 400
     assert status("2024-01-01", "2024-12-31") == 200  # a leap year
     assert status("2024-01-01", "2025-01-01") == 400
     assert status("2026-10-12", "not-a-date") == 422
-    assert status("2026-10-12", "2026-10-18", utc_offset_minutes=15 * 60) == 422
+    assert status("2026-10-12", "2026-10-18", tz="Nowhere/Special") == 422
+    assert status("2026-10-12", "2026-10-18", tz="../etc/passwd") == 422
+    assert client.get("/get-calendar-activity", params=WEEK).status_code == 422
 
 
 def test_demo_seed_completions_appear_in_activity(client, db):
