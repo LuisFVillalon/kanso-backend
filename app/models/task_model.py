@@ -10,6 +10,14 @@ class Task(Base):
     __table_args__ = (
         # Lists default to active rows only, so index just those per user.
         Index("ix_tasks_user_id_active", "user_id", postgresql_where=text("archived_at IS NULL")),
+        # The calendar activity range reads tasks by due date and by completion time.
+        Index("ix_tasks_user_id_due_date_active", "user_id", "due_date", postgresql_where=text("archived_at IS NULL")),
+        Index(
+            "ix_tasks_user_id_completed_date_active",
+            "user_id",
+            "completed_date",
+            postgresql_where=text("archived_at IS NULL"),
+        ),
     )
 
     id = Column(Integer, primary_key=True)

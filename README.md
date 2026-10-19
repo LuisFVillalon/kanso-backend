@@ -63,12 +63,15 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 | Note time | `POST /note-session/start` · `PUT /note-session/end/{id}` · `GET /note-session/total/{note_id}` · `GET /note-session/totals` · `GET /note-session/totals-range` · `POST /note-session/reap` |
 | Habits | `GET /get-habits` · `POST /create-habit` · `PUT /update-habit/{id}` · `DELETE /del-habit/{id}` · `PATCH /toggle-habit/{id}` · `PATCH /toggle-habit-date/{id}` · `POST /verify-streaks` · `GET /habit-history/{id}` |
 | Daily debrief | `GET /daily-debrief?local_date=&local_time=` |
+| Calendar activity | `GET /get-calendar-activity?start_date=&end_date=&tz=` |
 | Profile & settings | `GET /get-profile` · `POST /save-profile` · `GET /get-calendar-settings` · `PATCH /update-calendar-settings` |
 | Doodle canvas | `GET /get-drawing` · `POST /save-drawing` · `DELETE /delete-drawing` |
 | Account | `POST /update-password` (email accounts only) · `DELETE /delete-account` |
 | Demo | `POST /demo/seed?local_date=` (anonymous users only) |
 
 **Archiving.** Tasks, notes and tags carry an `archived_at` timestamp (`null` while active). `GET /get-tasks`, `/get-notes` and `/get-tags` return active rows only; pass `?archived=true` to list the archived ones instead. Archiving a task also archives its subtasks, and restoring it restores the subtasks archived with it plus any archived parents above it. Archiving a tag only hides it: tasks, notes and habits keep it in their `tags` lists. Creating or updating a task or note with an archived tag it didn't already carry restores that tag. Archived tasks and notes are left out of the daily debrief and note-time totals. The `del-*` endpoints delete archived rows permanently.
+
+**Calendar activity.** `GET /get-calendar-activity` returns what the user planned and did across a range of their local days (up to 366): tasks due in the range, tasks completed in it (by `completed_date`, set when a task is marked complete and cleared when it's reopened), closed note editing sessions that overlap it, and habit completions. It backs the calendar's week view and its weekly, monthly and yearly reports. Completion and session timestamps come back in UTC with a `Z` suffix; `tz`, the caller's IANA time zone (e.g. `America/Los_Angeles`, from `Intl.DateTimeFormat().resolvedOptions().timeZone`), matches them against the caller's local days, correctly across DST changes; an unknown zone is a 422. Archived tasks and notes are left out, and tasks completed before completion times were recorded have no `completed_date`, so they don't appear as completions.
 
 `GET /health` is public and used by Fly.io health checks.
 
