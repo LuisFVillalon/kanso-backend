@@ -45,6 +45,7 @@ app/
   models/        # SQLAlchemy models
   schemas/       # Pydantic request/response models; limits.py holds the input bounds
   database/      # Engine and session setup (Supabase pooler / pgBouncer-safe)
+tests/           # pytest suite (needs a throwaway Postgres, see below)
 alembic/         # Migrations (date-prefixed); run automatically on every deploy
 ```
 
@@ -56,9 +57,9 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 
 | Area | Endpoints |
 |---|---|
-| Tasks | `GET /get-tasks` · `POST /create-task` · `PUT /update-task/{id}` · `PATCH /update-task-status/{id}` · `DELETE /del-task/{id}` |
-| Tags | `GET /get-tags` · `POST /create-tags` · `PUT /update-tag/{id}` · `DELETE /del-tag/{id}` |
-| Notes | `GET /get-notes` · `POST /create-note` · `PUT /update-note/{id}` · `DELETE /del-note/{id}` |
+| Tasks | `GET /get-tasks` · `POST /create-task` · `PUT /update-task/{id}` · `PATCH /update-task-status/{id}` · `PATCH /archive-task/{id}` · `PATCH /unarchive-task/{id}` · `DELETE /del-task/{id}` |
+| Tags | `GET /get-tags` · `POST /create-tags` · `PUT /update-tag/{id}` · `PATCH /archive-tag/{id}` · `PATCH /unarchive-tag/{id}` · `DELETE /del-tag/{id}` |
+| Notes | `GET /get-notes` · `POST /create-note` · `PUT /update-note/{id}` · `PATCH /archive-note/{id}` · `PATCH /unarchive-note/{id}` · `DELETE /del-note/{id}` |
 | Note time | `POST /note-session/start` · `PUT /note-session/end/{id}` · `GET /note-session/total/{note_id}` · `GET /note-session/totals` · `GET /note-session/totals-range` · `POST /note-session/reap` |
 | Habits | `GET /get-habits` · `POST /create-habit` · `PUT /update-habit/{id}` · `DELETE /del-habit/{id}` · `PATCH /toggle-habit/{id}` · `PATCH /toggle-habit-date/{id}` · `POST /verify-streaks` · `GET /habit-history/{id}` |
 | Daily debrief | `GET /daily-debrief?local_date=&local_time=` |
@@ -66,6 +67,8 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 | Doodle canvas | `GET /get-drawing` · `POST /save-drawing` · `DELETE /delete-drawing` |
 | Account | `POST /update-password` (email accounts only) · `DELETE /delete-account` |
 | Demo | `POST /demo/seed?local_date=` (anonymous users only) |
+
+**Archiving.** Tasks, notes and tags carry an `archived_at` timestamp (`null` while active). `GET /get-tasks`, `/get-notes` and `/get-tags` return active rows only; pass `?archived=true` to list the archived ones instead. Archiving a task also archives its subtasks, and restoring it restores the subtasks archived with it plus any archived parents above it. Archiving a tag only hides it: tasks, notes and habits keep it in their `tags` lists. Creating or updating a task or note with an archived tag it didn't already carry restores that tag. Archived tasks and notes are left out of the daily debrief and note-time totals. The `del-*` endpoints delete archived rows permanently.
 
 `GET /health` is public and used by Fly.io health checks.
 
@@ -91,6 +94,8 @@ uvicorn app.main:app --reload     # http://localhost:8000/docs
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS origins (default: `http://localhost:3000,https://kanso-web-app.vercel.app`) |
 
 Linting: `ruff check .` (config in `pyproject.toml`).
+
+Tests: `pip install -r requirements-dev.txt`, then `TEST_DATABASE_URL=postgresql://... pytest`. The tests need Postgres (the queries use Postgres-only SQL) and drop and recreate every table in that database, so point it at an empty throwaway one. Without `TEST_DATABASE_URL` the tests are skipped.
 
 ## Deployment
 

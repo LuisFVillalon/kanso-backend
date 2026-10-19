@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
-from app.crud.note_crud import create_note, delete_note, get_notes, update_note
+from app.crud.note_crud import archive_note, create_note, delete_note, get_notes, unarchive_note, update_note
 from app.crud.note_session_crud import (
     end_session,
     get_time_by_note_for_datetime_range,
@@ -26,11 +26,12 @@ router = APIRouter()
 
 @router.get("/get-notes", response_model=list[Note])
 def read_notes(
+    archived: bool = Query(False, description="Return only archived notes instead of active ones."),
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return all notes belonging to the authenticated user."""
-    return get_notes(db, current_user.id)
+    """Return the authenticated user's active notes, or their archived ones with ?archived=true."""
+    return get_notes(db, current_user.id, archived=archived)
 
 
 @router.post("/create-note", response_model=Note, status_code=status.HTTP_201_CREATED)
@@ -62,6 +63,26 @@ def delete_note_by_id(
 ):
     """Delete a note owned by the authenticated user."""
     return require_found(delete_note(db, note_id, current_user.id), "Note not found")
+
+
+@router.patch("/archive-note/{note_id}", response_model=Note)
+def archive_note_by_id(
+    note_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Archive a note."""
+    return require_found(archive_note(db, note_id, current_user.id), "Note not found")
+
+
+@router.patch("/unarchive-note/{note_id}", response_model=Note)
+def unarchive_note_by_id(
+    note_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Restore an archived note."""
+    return require_found(unarchive_note(db, note_id, current_user.id), "Note not found")
 
 
 @router.post("/note-session/start", response_model=NoteSession, status_code=status.HTTP_201_CREATED)

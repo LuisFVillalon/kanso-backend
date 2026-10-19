@@ -1,9 +1,17 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
-from app.crud.task_crud import create_task, delete_task, get_tasks, update_task, update_task_status
+from app.crud.task_crud import (
+    archive_task,
+    create_task,
+    delete_task,
+    get_tasks,
+    unarchive_task,
+    update_task,
+    update_task_status,
+)
 from app.database.database import get_db
 from app.schemas.task_schema import Task, TaskCreate
 
@@ -12,11 +20,12 @@ router = APIRouter()
 
 @router.get("/get-tasks", response_model=list[Task])
 def read_tasks(
+    archived: bool = Query(False, description="Return only archived tasks instead of active ones."),
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return all tasks belonging to the authenticated user."""
-    return get_tasks(db, current_user.id)
+    """Return the authenticated user's active tasks, or their archived ones with ?archived=true."""
+    return get_tasks(db, current_user.id, archived=archived)
 
 
 @router.post("/create-task", response_model=Task)
@@ -58,3 +67,23 @@ def update_task_by_id(
 ):
     """Replace all fields of an existing task."""
     return require_found(update_task(db, task_id, payload, current_user.id), "Task not found")
+
+
+@router.patch("/archive-task/{task_id}", response_model=Task)
+def archive_task_by_id(
+    task_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Archive a task along with its subtasks."""
+    return require_found(archive_task(db, task_id, current_user.id), "Task not found")
+
+
+@router.patch("/unarchive-task/{task_id}", response_model=Task)
+def unarchive_task_by_id(
+    task_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Restore an archived task, the subtasks archived with it, and any archived parents above it."""
+    return require_found(unarchive_task(db, task_id, current_user.id), "Task not found")

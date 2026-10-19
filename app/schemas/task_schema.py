@@ -67,6 +67,8 @@ class Task(TaskBase):
     # user_id is set server-side from the JWT — exposed in responses but never
     # accepted from the client in TaskCreate/TaskBase.
     user_id: str | None = None
+    # Set server-side by /archive-task and /unarchive-task; NULL while active.
+    archived_at: datetime | None = None
     tags: list[Tag] = []
 
     model_config = {"from_attributes": True}

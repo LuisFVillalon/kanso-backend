@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.crud.base import get_owned
+from app.crud.base import archived_filter, get_owned, set_archived
 from app.models.tag_model import Tag as TagModel
 from app.schemas.tag_schema import TagCreate
 
@@ -24,18 +24,38 @@ def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
     return tag
 
 
+def set_item_tags(db: Session, item, tags_data, user_id: str) -> None:
+    """Replace a task's or note's tags by name.
+
+    An archived tag the item didn't already carry is restored, since newly
+    attaching it means the user wants it. Tags already on the item stay
+    archived when the item is re-saved.
+    """
+    previous_ids = {t.id for t in item.tags}
+    item.tags.clear()
+    for tag_data in tags_data:
+        tag = get_or_create_tag(db, tag_data, user_id)
+        if tag.id not in previous_ids:
+            tag.archived_at = None
+        item.tags.append(tag)
+
+
 def _ensure_name_available(db: Session, name: str, user_id: str, exclude_id: int | None = None) -> None:
     """Raise 409 if the user already has another tag with this name (uq_tags_name_user_id)."""
     q = db.query(TagModel).filter(TagModel.name == name, TagModel.user_id == user_id)
     if exclude_id is not None:
         q = q.filter(TagModel.id != exclude_id)
-    if q.first():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f'A tag named "{name}" already exists.')
+    existing = q.first()
+    if existing:
+        where = " in your archive" if existing.archived_at is not None else ""
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f'A tag named "{name}" already exists{where}.'
+        )
 
 
-def get_tags(db: Session, user_id: str):
-    """Return all tags owned by the given user."""
-    return db.query(TagModel).filter(TagModel.user_id == user_id).all()
+def get_tags(db: Session, user_id: str, archived: bool = False):
+    """Return the user's active tags, or only their archived ones when archived=True."""
+    return db.query(TagModel).filter(TagModel.user_id == user_id, archived_filter(TagModel, archived)).all()
 
 
 def create_tag(db: Session, tag: TagCreate, user_id: str):
@@ -69,3 +89,13 @@ def update_tag(db: Session, tag_id: int, tag: TagCreate, user_id: str):
     db.commit()
     db.refresh(db_tag)
     return db_tag
+
+
+def archive_tag(db: Session, tag_id: int, user_id: str):
+    """Archive a tag. Its task/note/habit links are kept. Returns None if not found."""
+    return set_archived(db, TagModel, tag_id, user_id, archived=True)
+
+
+def unarchive_tag(db: Session, tag_id: int, user_id: str):
+    """Restore an archived tag. Returns None if not found."""
+    return set_archived(db, TagModel, tag_id, user_id, archived=False)

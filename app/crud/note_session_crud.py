@@ -56,16 +56,22 @@ def get_total_time_seconds(db: Session, note_id: int, user_id: str) -> int:
     return int(total or 0)
 
 
-def get_total_time_by_note(db: Session, user_id: str) -> list[tuple[int, int]]:
-    """Sum closed-session duration per note for the user. Notes with zero closed sessions are omitted."""
+def _closed_seconds_by_active_note(db: Session, user_id: str, *conditions) -> list[tuple[int, int]]:
+    """Sum closed-session duration per note for the user, for sessions matching conditions.
+
+    Archived notes are left out: their time no longer counts toward totals or stats.
+    """
     rows = (
         db.query(
             NoteSessionModel.note_id,
             func.sum(func.extract("epoch", NoteSessionModel.ended_at - NoteSessionModel.started_at)),
         )
+        .join(NoteModel, NoteModel.id == NoteSessionModel.note_id)
         .filter(
             NoteSessionModel.user_id == user_id,
             NoteSessionModel.ended_at.isnot(None),
+            NoteModel.archived_at.is_(None),
+            *conditions,
         )
         .group_by(NoteSessionModel.note_id)
         .all()
@@ -73,8 +79,13 @@ def get_total_time_by_note(db: Session, user_id: str) -> list[tuple[int, int]]:
     return [(note_id, int(total or 0)) for note_id, total in rows]
 
 
+def get_total_time_by_note(db: Session, user_id: str) -> list[tuple[int, int]]:
+    """Sum closed-session duration per active note for the user. Notes with zero closed sessions are omitted."""
+    return _closed_seconds_by_active_note(db, user_id)
+
+
 def get_time_by_note_for_date(db: Session, user_id: str, target_date) -> list[tuple[int, int]]:
-    """Sum closed-session duration per note for the user, for sessions that ended on target_date.
+    """Sum closed-session duration per active note for the user, for sessions that ended on target_date.
 
     Compares the UTC calendar date of ended_at, with no timezone offset
     applied. This is a fallback for callers that can't supply the caller's
@@ -84,26 +95,13 @@ def get_time_by_note_for_date(db: Session, user_id: str, target_date) -> list[tu
     date and so doesn't misclassify sessions that end near midnight in the
     caller's timezone.
     """
-    rows = (
-        db.query(
-            NoteSessionModel.note_id,
-            func.sum(func.extract("epoch", NoteSessionModel.ended_at - NoteSessionModel.started_at)),
-        )
-        .filter(
-            NoteSessionModel.user_id == user_id,
-            NoteSessionModel.ended_at.isnot(None),
-            func.date(NoteSessionModel.ended_at) == target_date,
-        )
-        .group_by(NoteSessionModel.note_id)
-        .all()
-    )
-    return [(note_id, int(total or 0)) for note_id, total in rows]
+    return _closed_seconds_by_active_note(db, user_id, func.date(NoteSessionModel.ended_at) == target_date)
 
 
 def get_time_by_note_for_datetime_range(
     db: Session, user_id: str, start: datetime, end: datetime
 ) -> list[tuple[int, int]]:
-    """Sum closed-session duration per note for the user, for sessions with ended_at in [start, end).
+    """Sum closed-session duration per active note for the user, for sessions with ended_at in [start, end).
 
     Unlike get_time_by_note_for_date, start/end are explicit UTC instants
     rather than a UTC calendar date, so a caller that has derived the UTC
@@ -111,45 +109,24 @@ def get_time_by_note_for_datetime_range(
     debrief_crud._local_day_bounds_utc) gets sessions bucketed by that local
     day instead of the UTC day.
     """
-    rows = (
-        db.query(
-            NoteSessionModel.note_id,
-            func.sum(func.extract("epoch", NoteSessionModel.ended_at - NoteSessionModel.started_at)),
-        )
-        .filter(
-            NoteSessionModel.user_id == user_id,
-            NoteSessionModel.ended_at.isnot(None),
-            NoteSessionModel.ended_at >= start,
-            NoteSessionModel.ended_at < end,
-        )
-        .group_by(NoteSessionModel.note_id)
-        .all()
+    return _closed_seconds_by_active_note(
+        db, user_id, NoteSessionModel.ended_at >= start, NoteSessionModel.ended_at < end
     )
-    return [(note_id, int(total or 0)) for note_id, total in rows]
 
 
 def get_time_by_note_for_range(db: Session, user_id: str, start_date, end_date) -> list[tuple[int, int]]:
-    """Sum closed-session duration per note for the user, for sessions ended within [start_date, end_date].
+    """Sum closed-session duration per active note for the user, for sessions ended within [start_date, end_date].
 
     Compares the UTC calendar date of ended_at against the given bounds — the
     same day-boundary approximation get_time_by_note_for_date already makes,
     extended to an inclusive range instead of a single day.
     """
-    rows = (
-        db.query(
-            NoteSessionModel.note_id,
-            func.sum(func.extract("epoch", NoteSessionModel.ended_at - NoteSessionModel.started_at)),
-        )
-        .filter(
-            NoteSessionModel.user_id == user_id,
-            NoteSessionModel.ended_at.isnot(None),
-            func.date(NoteSessionModel.ended_at) >= start_date,
-            func.date(NoteSessionModel.ended_at) <= end_date,
-        )
-        .group_by(NoteSessionModel.note_id)
-        .all()
+    return _closed_seconds_by_active_note(
+        db,
+        user_id,
+        func.date(NoteSessionModel.ended_at) >= start_date,
+        func.date(NoteSessionModel.ended_at) <= end_date,
     )
-    return [(note_id, int(total or 0)) for note_id, total in rows]
 
 
 def reap_stale_sessions(db: Session, user_id: str) -> int:

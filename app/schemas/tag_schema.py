@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 from app.schemas.limits import COLOR_MAX, TAG_NAME_MAX
@@ -19,5 +21,8 @@ class Tag(TagBase):
     id: int
     # user_id exposed in responses so the frontend knows which tags belong to it.
     user_id: str | None = None
+    # NULL while active. Archived tags still appear in task/note/habit tag
+    # lists, so the client uses this to tell them apart.
+    archived_at: datetime | None = None
 
     model_config = {"from_attributes": True}
