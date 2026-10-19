@@ -85,5 +85,5 @@ def unarchive_task_by_id(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Restore an archived task and the subtasks archived with it."""
+    """Restore an archived task, the subtasks archived with it, and any archived parents above it."""
     return require_found(unarchive_task(db, task_id, current_user.id), "Task not found")

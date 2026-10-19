@@ -209,9 +209,9 @@ def unarchive_task(db: Session, task_id: int, user_id: str):
 
     Subtasks archived separately, before the parent, stay archived. Archived
     ancestors are restored too (not their other subtasks), so the task never
-    comes back under a hidden parent. A restored
-    task whose priority was taken by another task while it was archived comes
-    back without a priority rather than duplicating it.
+    comes back under a hidden parent. A restored task whose priority was taken
+    by another task while it was archived comes back without a priority rather
+    than duplicating it.
     """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:

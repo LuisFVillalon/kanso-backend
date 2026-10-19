@@ -68,7 +68,7 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 | Account | `POST /update-password` (email accounts only) · `DELETE /delete-account` |
 | Demo | `POST /demo/seed?local_date=` (anonymous users only) |
 
-**Archiving.** Tasks, notes and tags carry an `archived_at` timestamp (`null` while active). `GET /get-tasks`, `/get-notes` and `/get-tags` return active rows only; pass `?archived=true` to list the archived ones instead. Archiving a task also archives its subtasks, and restoring it restores the subtasks archived with it. Archiving a tag only hides it: tasks, notes and habits keep it in their `tags` lists. Archived tasks and notes are left out of the daily debrief and note-time totals. The `del-*` endpoints delete archived rows permanently.
+**Archiving.** Tasks, notes and tags carry an `archived_at` timestamp (`null` while active). `GET /get-tasks`, `/get-notes` and `/get-tags` return active rows only; pass `?archived=true` to list the archived ones instead. Archiving a task also archives its subtasks, and restoring it restores the subtasks archived with it plus any archived parents above it. Archiving a tag only hides it: tasks, notes and habits keep it in their `tags` lists. Creating or updating a task or note with an archived tag it didn't already carry restores that tag. Archived tasks and notes are left out of the daily debrief and note-time totals. The `del-*` endpoints delete archived rows permanently.
 
 `GET /health` is public and used by Fly.io health checks.
 
