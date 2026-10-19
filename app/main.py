@@ -18,6 +18,7 @@ from app.routers import (
     profile_router,
     tags_router,
     tasks_router,
+    trash_router,
     user_router,
 )
 
@@ -79,6 +80,7 @@ app.include_router(profile_router.router)
 app.include_router(drawing_router.router)
 app.include_router(debrief_router.router)
 app.include_router(demo_router.router)
+app.include_router(trash_router.router)
 
 
 @app.get("/", include_in_schema=False)

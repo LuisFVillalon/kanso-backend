@@ -1,9 +1,10 @@
-"""Archived tasks and notes stay out of the debrief, note-time totals and stats."""
+"""Archived tasks, notes and habits stay out of the debrief, note-time totals, streak checks and stats."""
 
 from datetime import UTC, date, datetime, time, timedelta
 
 from app.crud.account_crud import delete_user_rows
 from app.crud.demo_crud import seed_demo_data
+from app.models.habit_model import Habit
 from app.models.note_model import Note
 from app.models.note_session_model import NoteSession
 from app.models.tag_model import Tag
@@ -116,6 +117,42 @@ def test_restored_note_counts_toward_totals_again(client, db):
 
     client.patch(f"/unarchive-note/{note.id}")
     assert client.get("/note-session/totals").json() == [{"note_id": note.id, "total_seconds": 20 * 60}]
+
+
+def test_debrief_habit_status_excludes_archived_habits(client, db):
+    db.add_all([
+        Habit(title="Active", user_id=USER_ID),
+        Habit(title="Archived", user_id=USER_ID, archived_at=datetime.now(UTC)),
+    ])
+    db.commit()
+
+    report = client.get("/daily-debrief", params={"local_date": TODAY.isoformat()}).json()
+    assert [h["title"] for h in report["habit_status"]] == ["Active"]
+
+
+def test_verify_streaks_skips_archived_habits(client, db):
+    active = Habit(title="Active", user_id=USER_ID, current_streak=3, max_streak=3)
+    archived = Habit(title="Archived", user_id=USER_ID, current_streak=4, max_streak=4, archived_at=datetime.now(UTC))
+    db.add_all([active, archived])
+    db.commit()
+
+    assert client.post("/verify-streaks", params={"local_date": TODAY.isoformat()}).json() == {"reset_count": 1}
+    db.refresh(active)
+    db.refresh(archived)
+    assert active.current_streak == 0
+    assert archived.current_streak == 4
+
+
+def test_archived_habit_keeps_logged_today(client):
+    habit = client.post("/create-habit", json={"title": "Stretch"}).json()
+    params = {"local_date": TODAY.isoformat()}
+    client.patch(f"/toggle-habit/{habit['id']}", params=params)
+
+    archived = client.patch(f"/archive-habit/{habit['id']}", params=params).json()
+    assert archived["logged_today"] is True
+    [listed] = client.get("/get-habits", params={**params, "archived": "true"}).json()
+    assert listed["logged_today"] is True
+    assert listed["current_streak"] == 1
 
 
 def test_account_deletion_and_demo_seed_handle_archived_rows(client, db):

@@ -193,6 +193,35 @@ def test_habit_completions_in_range(client, db):
     assert completions[0]["estimated_time"] == 0.25
 
 
+def test_trashed_and_archived_items_are_left_out_until_restored(client, db):
+    tag = Tag(name="School", color="#8b5cf6", user_id=USER_ID)
+    db.add(tag)
+    task = _task(db, "Trashed", WEEK_START, completed=True, completed_date=datetime(2026, 10, 13, 12, 0))
+    task.tags = [tag]
+    note = _note(db, "Trashed note")
+    _session(db, note, datetime(2026, 10, 13, 9, 0), datetime(2026, 10, 13, 10, 0))
+    habit = _habit(db, "Trashed habit", [WEEK_START])
+    archived_habit = _habit(db, "Archived habit", [WEEK_START])
+    db.commit()
+
+    for path in (f"/del-task/{task.id}", f"/del-note/{note.id}", f"/del-habit/{habit.id}"):
+        assert client.delete(path).status_code == 200
+    assert client.patch(f"/archive-habit/{archived_habit.id}").status_code == 200
+    activity = _activity(client)
+    for key in ("scheduled_tasks", "completed_tasks", "note_sessions", "habit_completions"):
+        assert activity[key] == [], key
+
+    for path in (f"/restore-task/{task.id}", f"/restore-note/{note.id}", f"/restore-habit/{habit.id}"):
+        assert client.patch(path).status_code == 200
+    assert client.delete(f"/del-tag/{tag.id}").status_code == 200
+    activity = _activity(client)
+    assert [t["title"] for t in activity["scheduled_tasks"]] == ["Trashed"]
+    assert activity["scheduled_tasks"][0]["tags"] == []
+    assert [t["title"] for t in activity["completed_tasks"]] == ["Trashed"]
+    assert [s["note_title"] for s in activity["note_sessions"]] == ["Trashed note"]
+    assert [c["habit_title"] for c in activity["habit_completions"]] == ["Trashed habit"]
+
+
 def test_other_users_see_none_of_it(client, db):
     _task(db, "Mine", WEEK_START, completed=True, completed_date=datetime(2026, 10, 13, 12, 0))
     note = _note(db, "Mine")

@@ -4,7 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.limits import SHORT_MAX, TAGS_PER_ITEM_MAX, TEXT_MAX, TITLE_MAX
-from app.schemas.tag_schema import Tag, TagCreate
+from app.schemas.tag_schema import TagCreate, VisibleTags
 
 
 class TaskBase(BaseModel):
@@ -69,6 +69,8 @@ class Task(TaskBase):
     user_id: str | None = None
     # Set server-side by /archive-task and /unarchive-task; NULL while active.
     archived_at: datetime | None = None
-    tags: list[Tag] = []
+    # Set server-side by /del-task and /restore-task; NULL unless in the trash.
+    deleted_at: datetime | None = None
+    tags: VisibleTags = []
 
     model_config = {"from_attributes": True}

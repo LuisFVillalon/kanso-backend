@@ -38,7 +38,10 @@ def end_session(db: Session, session_id: int, user_id: str) -> NoteSessionModel 
 
 
 def get_total_time_seconds(db: Session, note_id: int, user_id: str) -> int:
-    """Sum the duration of all closed sessions for a note. Open (never-ended) sessions aren't counted."""
+    """Sum the duration of all closed sessions for a note. Open (never-ended) sessions aren't counted.
+
+    A deleted note counts as gone, so its total is 0 until it's restored.
+    """
     total = (
         db.query(
             func.coalesce(
@@ -46,10 +49,12 @@ def get_total_time_seconds(db: Session, note_id: int, user_id: str) -> int:
                 0,
             )
         )
+        .join(NoteModel, NoteModel.id == NoteSessionModel.note_id)
         .filter(
             NoteSessionModel.note_id == note_id,
             NoteSessionModel.user_id == user_id,
             NoteSessionModel.ended_at.isnot(None),
+            NoteModel.deleted_at.is_(None),
         )
         .scalar()
     )
@@ -59,7 +64,7 @@ def get_total_time_seconds(db: Session, note_id: int, user_id: str) -> int:
 def _closed_seconds_by_active_note(db: Session, user_id: str, *conditions) -> list[tuple[int, int]]:
     """Sum closed-session duration per note for the user, for sessions matching conditions.
 
-    Archived notes are left out: their time no longer counts toward totals or stats.
+    Archived and deleted notes are left out: their time no longer counts toward totals or stats.
     """
     rows = (
         db.query(
@@ -71,6 +76,7 @@ def _closed_seconds_by_active_note(db: Session, user_id: str, *conditions) -> li
             NoteSessionModel.user_id == user_id,
             NoteSessionModel.ended_at.isnot(None),
             NoteModel.archived_at.is_(None),
+            NoteModel.deleted_at.is_(None),
             *conditions,
         )
         .group_by(NoteSessionModel.note_id)

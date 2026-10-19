@@ -1,9 +1,10 @@
+from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.limits import TAGS_PER_ITEM_MAX, TITLE_MAX
-from app.schemas.tag_schema import Tag, TagCreate
+from app.schemas.tag_schema import Tag, TagCreate, VisibleTags
 
 
 class HabitBase(BaseModel):
@@ -36,6 +37,11 @@ class HabitResponse(HabitBase):
     current_streak: int = 0
     max_streak: int = 0
     logged_today: bool = False
+    # Set server-side by /archive-habit and /unarchive-habit; NULL while active.
+    archived_at: datetime | None = None
+    # Set server-side by /del-habit and /restore-habit; NULL unless in the trash.
+    deleted_at: datetime | None = None
+    tags: VisibleTags = []
 
     model_config = {"from_attributes": True}
 

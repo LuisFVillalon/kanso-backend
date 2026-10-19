@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.schemas.limits import NOTE_CONTENT_MAX, TAGS_PER_ITEM_MAX, TITLE_MAX
-from app.schemas.tag_schema import Tag, TagCreate
+from app.schemas.tag_schema import Tag, TagCreate, VisibleTags
 
 
 class NoteBase(BaseModel):
@@ -34,5 +34,8 @@ class Note(NoteBase):
     user_id: str | None = None
     # Set server-side by /archive-note and /unarchive-note; NULL while active.
     archived_at: datetime | None = None
+    # Set server-side by /del-note and /restore-note; NULL unless in the trash.
+    deleted_at: datetime | None = None
+    tags: VisibleTags = []
 
     model_config = {"from_attributes": True}

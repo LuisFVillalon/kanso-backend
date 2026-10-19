@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from app.schemas.tag_schema import Tag as TagSchema
+from app.schemas.tag_schema import VisibleTags
 
 
 class DebriefTaskItem(BaseModel):
@@ -14,7 +14,7 @@ class DebriefTaskItem(BaseModel):
     due_date: date | None = None
     due_time: time | None = None
     estimated_time: float | None = None
-    tags: list[TagSchema] = []
+    tags: VisibleTags = []
 
     model_config = {"from_attributes": True}
 
@@ -26,7 +26,7 @@ class HabitDebriefStatus(BaseModel):
     max_streak: int = 0
     logged_today: bool = False
     estimated_time: float | None = None
-    tags: list[TagSchema] = []
+    tags: VisibleTags = []
 
     model_config = {"from_attributes": True}
 
@@ -35,7 +35,7 @@ class DebriefNoteItem(BaseModel):
     id: int
     title: str
     minutes: float = 0
-    tags: list[TagSchema] = []
+    tags: VisibleTags = []
 
     model_config = {"from_attributes": True}
 

@@ -6,12 +6,16 @@ from sqlalchemy.orm import Session
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
 from app.crud.habit_crud import (
+    archive_habit,
     create_habit,
     delete_habit,
     get_habit_history,
     get_habits,
+    purge_habit,
+    restore_habit,
     toggle_habit_log,
     toggle_habit_log_date,
+    unarchive_habit,
     update_habit,
     verify_and_reset_streaks,
 )
@@ -32,11 +36,13 @@ _LOCAL_DATE_QUERY = Query(
 @router.get("/get-habits", response_model=list[HabitResponse])
 def read_habits(
     local_date: str | None = _LOCAL_DATE_QUERY,
+    archived: bool = Query(False, description="Return only archived habits instead of active ones."),
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return all habits belonging to the authenticated user, with today's completion state."""
-    return get_habits(db, current_user.id, local_date=local_date)
+    """Return the authenticated user's active habits, or their archived ones with ?archived=true,
+    with today's completion state."""
+    return get_habits(db, current_user.id, local_date=local_date, archived=archived)
 
 
 @router.post("/create-habit", response_model=HabitResponse)
@@ -67,7 +73,7 @@ def delete_habit_by_id(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a habit and all its logs (CASCADE)."""
+    """Move a habit to the trash, where it can be restored with its logs for 30 days."""
     return require_found(delete_habit(db, habit_id, current_user.id), "Habit not found")
 
 
@@ -135,3 +141,48 @@ def toggle_habit_completion_date(
         toggle_habit_log_date(db, habit_id, current_user.id, target, local_date=payload.local_date),
         "Habit not found",
     )
+
+
+@router.patch("/archive-habit/{habit_id}", response_model=HabitResponse)
+def archive_habit_by_id(
+    habit_id: int,
+    local_date: str | None = _LOCAL_DATE_QUERY,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Archive a habit. It keeps its logs and is left out of streak checks and the debrief."""
+    return require_found(archive_habit(db, habit_id, current_user.id, local_date=local_date), "Habit not found")
+
+
+@router.patch("/unarchive-habit/{habit_id}", response_model=HabitResponse)
+def unarchive_habit_by_id(
+    habit_id: int,
+    local_date: str | None = _LOCAL_DATE_QUERY,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Restore an archived habit."""
+    return require_found(unarchive_habit(db, habit_id, current_user.id, local_date=local_date), "Habit not found")
+
+
+@router.patch("/restore-habit/{habit_id}", response_model=HabitResponse)
+def restore_habit_by_id(
+    habit_id: int,
+    local_date: str | None = _LOCAL_DATE_QUERY,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Restore a habit from the trash, with its logs."""
+    return require_found(
+        restore_habit(db, habit_id, current_user.id, local_date=local_date), "Habit not found in the trash"
+    )
+
+
+@router.delete("/purge-habit/{habit_id}", status_code=status.HTTP_204_NO_CONTENT)
+def purge_habit_by_id(
+    habit_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete a habit that is in the trash, without waiting out the 30 days."""
+    require_found(purge_habit(db, habit_id, current_user.id), "Habit not found in the trash")
