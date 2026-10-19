@@ -97,7 +97,7 @@ def delete_task(db: Session, task_id: int, user_id: str):
     stamp = datetime.now(UTC)
     for t in [task, *_descendants(db, task, user_id)]:
         t.deleted_at = stamp
-    purge_expired(db, user_id)
+    purge_expired(db)
     db.commit()
     db.refresh(task)
     return task

@@ -160,7 +160,7 @@ def delete_habit(db: Session, habit_id: int, user_id: str):
     if not db_habit:
         return None
     db_habit.deleted_at = datetime.now(UTC)
-    purge_expired(db, user_id)
+    purge_expired(db)
     db.commit()
     db.refresh(db_habit)
     return _stamp(db_habit, False)

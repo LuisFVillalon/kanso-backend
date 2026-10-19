@@ -7,7 +7,8 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database.database import check_db_connection
+from app.crud.trash_crud import purge_expired
+from app.database.database import SessionLocal, check_db_connection
 from app.routers import (
     calendar_router,
     debrief_router,
@@ -52,6 +53,14 @@ async def lifespan(app: FastAPI):
         check_db_connection()
     except Exception as exc:
         warnings.warn(f"Startup DB check failed (app will still start): {exc}", stacklevel=1)
+
+    # Remove trash past retention even for users who never come back.
+    try:
+        with SessionLocal() as db:
+            purge_expired(db)
+            db.commit()
+    except Exception as exc:
+        warnings.warn(f"Startup trash purge failed (app will still start): {exc}", stacklevel=1)
 
     yield
 

@@ -62,7 +62,7 @@ def delete_note(db: Session, note_id: int, user_id: str):
     if not db_note:
         return None
     db_note.deleted_at = datetime.now(UTC)
-    purge_expired(db, user_id)
+    purge_expired(db)
     db.commit()
     db.refresh(db_note)
     return db_note

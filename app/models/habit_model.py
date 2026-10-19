@@ -12,6 +12,8 @@ class Habit(Base):
         Index(
             "ix_habits_user_id_active", "user_id", postgresql_where=text("archived_at IS NULL AND deleted_at IS NULL")
         ),
+        # The expiry purge finds rows deleted past retention by deleted_at alone.
+        Index("ix_habits_deleted_at", "deleted_at", postgresql_where=text("deleted_at IS NOT NULL")),
     )
 
     id = Column(Integer, primary_key=True, index=True)

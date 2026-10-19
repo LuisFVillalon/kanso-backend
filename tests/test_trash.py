@@ -1,9 +1,12 @@
 """Deleting moves tasks, notes, tags and habits to the trash for 30 days."""
 
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app import main
 from app.crud.account_crud import delete_user_rows
 from app.crud.base import TRASH_RETENTION
 from app.crud.demo_crud import seed_demo_data
@@ -196,15 +199,42 @@ def test_rows_past_retention_are_gone_and_purged(client, db, kind):
     assert db.get(model, recent.id) is not None
 
 
-def test_expired_rows_are_purged_when_the_user_deletes_something(client, db):
+def test_one_users_delete_purges_every_users_expired_rows(client, db):
     expired = _row(db, "note", deleted_ago=TRASH_RETENTION + timedelta(days=1))
-    expired_id = expired.id
     foreign = _row(db, "note", user_id=OTHER_USER_ID, deleted_ago=TRASH_RETENTION + timedelta(days=1))
+    foreign_recent = _row(db, "habit", user_id=OTHER_USER_ID, deleted_ago=timedelta(days=1))
+    expired_id, foreign_id = expired.id, foreign.id
 
     _delete(client, "task", _create(client, "task")["id"])
     db.expire_all()
     assert db.get(Note, expired_id) is None
-    assert db.get(Note, foreign.id) is not None, "a user's request must never purge another user's rows"
+    assert db.get(Note, foreign_id) is None
+    assert db.get(Habit, foreign_recent.id) is not None
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_opening_the_trash_purges_other_users_expired_rows(client, db, kind):
+    model = KINDS[kind][3]
+    foreign_id = _row(db, kind, user_id=OTHER_USER_ID, deleted_ago=TRASH_RETENTION + timedelta(days=1)).id
+
+    _trash(client)
+    db.expire_all()
+    assert db.get(model, foreign_id) is None
+
+
+def test_startup_purges_expired_rows_for_users_who_never_return(db, monkeypatch):
+    expired_id = _row(db, "habit", user_id=OTHER_USER_ID, deleted_ago=TRASH_RETENTION + timedelta(days=1)).id
+    db.add(HabitLog(habit_id=expired_id, logged_date=date.today()))
+    db.commit()
+    recent_id = _row(db, "note", user_id=OTHER_USER_ID, deleted_ago=timedelta(days=1)).id
+    monkeypatch.setattr(main, "SessionLocal", lambda: nullcontext(db))
+
+    with TestClient(main.app):
+        pass
+    db.expire_all()
+    assert db.get(Habit, expired_id) is None
+    assert db.query(HabitLog).filter(HabitLog.habit_id == expired_id).count() == 0
+    assert db.get(Note, recent_id) is not None
 
 
 # ── Associations survive a round trip ────────────────────────────────────────

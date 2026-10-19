@@ -103,7 +103,7 @@ def delete_tag(db: Session, tag_id: int, user_id: str):
     if not tag:
         return None
     tag.deleted_at = datetime.now(UTC)
-    purge_expired(db, user_id)
+    purge_expired(db)
     db.commit()
     db.refresh(tag)
     return tag

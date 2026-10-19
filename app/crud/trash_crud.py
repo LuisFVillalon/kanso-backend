@@ -5,13 +5,16 @@ Deleting one of these sets its deleted_at instead of removing the row, so
 its tags, habit logs and note sessions survive for a restore. Every normal
 list, lookup and stat leaves deleted rows out (see base.get_owned).
 
-Expired rows are purged per user, with no scheduler: purge_expired runs
-whenever the user opens the trash, restores or purges from it, or deletes
-something. A row past retention is already invisible everywhere (even to
-the trash and restore), so when its physical removal happens isn't
-observable; deleting the account removes it at once regardless.
+Expired rows are purged for every user at once, with no scheduler:
+purge_expired runs at startup and whenever anyone opens the trash, restores
+or purges from it, or deletes something, so an item is removed for good
+even if its owner never comes back. A row past retention is already
+invisible everywhere (even to the trash and restore), so when its physical
+removal happens isn't observable; deleting the account removes it at once
+regardless.
 """
 
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.crud.base import TRASH_RETENTION, get_owned, trash_cutoff
@@ -24,22 +27,28 @@ from app.schemas.trash_schema import TrashItem
 TRASHABLE_MODELS = {"task": Task, "note": Note, "tag": Tag, "habit": Habit}
 
 
-def purge_expired(db: Session, user_id: str) -> None:
-    """Permanently delete the user's rows deleted more than TRASH_RETENTION ago. Flushes but does not commit.
+def purge_expired(db: Session) -> None:
+    """Permanently delete every user's rows deleted more than TRASH_RETENTION ago. Does not commit.
 
-    Rows go through the ORM rather than a bulk delete so a purged parent
-    task's remaining subtasks get their parent_task_id cleared.
+    One delete per table, served by its deleted_at index. Tag links, habit
+    logs and note sessions go with their rows (ON DELETE CASCADE); subtasks
+    of a purged task are detached first. Concurrent runs are safe: a row
+    another run already deleted is just skipped.
     """
     cutoff = trash_cutoff()
+    db.execute(
+        update(Task)
+        .where(Task.parent_task_id.in_(select(Task.id).where(Task.deleted_at <= cutoff)))
+        .values(parent_task_id=None)
+        .execution_options(synchronize_session="fetch")
+    )
     for model in TRASHABLE_MODELS.values():
-        for row in db.query(model).filter(model.user_id == user_id, model.deleted_at <= cutoff).all():
-            db.delete(row)
-        db.flush()
+        db.execute(delete(model).where(model.deleted_at <= cutoff).execution_options(synchronize_session="fetch"))
 
 
 def get_trash(db: Session, user_id: str, kind: str | None = None) -> list[TrashItem]:
     """List the user's deleted items, newest first, optionally of one kind only."""
-    purge_expired(db, user_id)
+    purge_expired(db)
     db.commit()
     kinds = [kind] if kind else list(TRASHABLE_MODELS)
     items = []
@@ -61,8 +70,8 @@ def get_trash(db: Session, user_id: str, kind: str | None = None) -> list[TrashI
 
 
 def get_trashed(db: Session, model, record_id: int, user_id: str):
-    """Purge the user's expired rows, then fetch one row still in the trash. Returns None if not there."""
-    purge_expired(db, user_id)
+    """Purge expired rows, then fetch one row still in the trash. Returns None if not there."""
+    purge_expired(db)
     db.commit()
     return get_owned(db, model, record_id, user_id, trashed=True)
 

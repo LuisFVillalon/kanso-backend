@@ -8,7 +8,7 @@ Deleting a task, note, tag or habit now sets deleted_at instead of removing
 the row, so it can be restored from the trash for 30 days. Habits also gain
 the archived_at column tasks, notes and tags already have. Lists return only
 active, undeleted rows, so each table's partial index on user_id now covers
-just those.
+just those, and a partial index on deleted_at serves the expiry purge.
 """
 from typing import Sequence, Union
 
@@ -37,6 +37,12 @@ def upgrade() -> None:
             ['user_id'],
             postgresql_where=sa.text('archived_at IS NULL AND deleted_at IS NULL'),
         )
+        op.create_index(
+            f'ix_{table}_deleted_at',
+            table,
+            ['deleted_at'],
+            postgresql_where=sa.text('deleted_at IS NOT NULL'),
+        )
 
 
 def downgrade() -> None:
@@ -49,6 +55,7 @@ def downgrade() -> None:
     )
     for table in _TABLES:
         op.execute(f'DELETE FROM {table} WHERE deleted_at IS NOT NULL')
+        op.drop_index(f'ix_{table}_deleted_at', table_name=table)
         op.drop_index(f'ix_{table}_user_id_active', table_name=table)
         op.drop_column(table, 'deleted_at')
     for table in _ARCHIVED_BEFORE:
