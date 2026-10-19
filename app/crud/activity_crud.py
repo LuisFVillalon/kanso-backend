@@ -25,7 +25,7 @@ def _local_midnight_utc(day: date, tz: ZoneInfo) -> datetime:
 def get_calendar_activity(db: Session, user_id: str, start: date, end: date, tz: ZoneInfo) -> CalendarActivity:
     """Everything the user planned or did across local days start..end inclusive:
     tasks due in the range, tasks completed in it, note editing sessions and
-    habit completions. Archived tasks and notes are left out.
+    habit completions. Archived and deleted tasks, notes and habits are left out.
 
     Due dates and habit log dates are already local calendar dates. Completion
     and session timestamps are UTC, so they are matched against the UTC
@@ -38,7 +38,7 @@ def get_calendar_activity(db: Session, user_id: str, start: date, end: date, tz:
     active_tasks = (
         db.query(TaskModel)
         .options(selectinload(TaskModel.tags))
-        .filter(TaskModel.user_id == user_id, TaskModel.archived_at.is_(None))
+        .filter(TaskModel.user_id == user_id, TaskModel.archived_at.is_(None), TaskModel.deleted_at.is_(None))
     )
     scheduled_tasks = (
         active_tasks.filter(
@@ -64,6 +64,7 @@ def get_calendar_activity(db: Session, user_id: str, start: date, end: date, tz:
         .filter(
             NoteSessionModel.user_id == user_id,
             NoteModel.archived_at.is_(None),
+            NoteModel.deleted_at.is_(None),
             # Overlaps the range. Zero-length sessions (reaped orphans, see
             # note_session_crud.reap_stale_sessions) are left out.
             NoteSessionModel.ended_at > range_start_utc,
@@ -77,7 +78,13 @@ def get_calendar_activity(db: Session, user_id: str, start: date, end: date, tz:
     habit_rows = (
         db.query(HabitLog.logged_date, Habit.id, Habit.title, Habit.estimated_time)
         .join(Habit, Habit.id == HabitLog.habit_id)
-        .filter(Habit.user_id == user_id, HabitLog.logged_date >= start, HabitLog.logged_date <= end)
+        .filter(
+            Habit.user_id == user_id,
+            Habit.archived_at.is_(None),
+            Habit.deleted_at.is_(None),
+            HabitLog.logged_date >= start,
+            HabitLog.logged_date <= end,
+        )
         .order_by(HabitLog.logged_date, func.lower(Habit.title), Habit.id)
         .all()
     )

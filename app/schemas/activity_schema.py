@@ -3,7 +3,7 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel
 
-from app.schemas.tag_schema import Tag as TagSchema
+from app.schemas.tag_schema import VisibleTags
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -28,7 +28,7 @@ class ActivityTask(BaseModel):
     completed: bool = False
     completed_date: UtcDatetime | None = None
     parent_task_id: int | None = None
-    tags: list[TagSchema] = []
+    tags: VisibleTags = []
 
     model_config = {"from_attributes": True}
 

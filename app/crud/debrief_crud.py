@@ -184,7 +184,7 @@ def build_daily_debrief(
 ) -> DailyDebriefReport:
     """Assemble the daily debrief report: overdue/due-today tasks, habit status,
     workload capacity, and a unified 'focus next' recommendation block.
-    Archived tasks and notes are left out of every section.
+    Archived and deleted tasks, notes and habits are left out of every section.
 
     local_date/local_time are the caller's own calendar date and clock time
     (not the server's). The server may run in a different timezone (e.g. UTC),
@@ -202,6 +202,7 @@ def build_daily_debrief(
             TaskModel.user_id == user_id,
             TaskModel.completed == False,  # noqa: E712
             TaskModel.archived_at.is_(None),
+            TaskModel.deleted_at.is_(None),
         )
         .all()
     )
@@ -226,6 +227,7 @@ def build_daily_debrief(
         TaskModel.user_id == user_id,
         TaskModel.completed == True,  # noqa: E712
         TaskModel.archived_at.is_(None),
+        TaskModel.deleted_at.is_(None),
     )
     day_bounds = _local_day_bounds_utc(today, now_time)
     if day_bounds:

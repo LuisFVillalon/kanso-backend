@@ -14,8 +14,12 @@ class Tag(Base):
         # NULLs are treated as distinct in Postgres, so legacy rows (user_id=NULL)
         # with the same name are also allowed through.
         UniqueConstraint("name", "user_id", name="uq_tags_name_user_id"),
-        # Lists default to active rows only, so index just those per user.
-        Index("ix_tags_user_id_active", "user_id", postgresql_where=text("archived_at IS NULL")),
+        # Lists default to active, undeleted rows only, so index just those per user.
+        Index(
+            "ix_tags_user_id_active", "user_id", postgresql_where=text("archived_at IS NULL AND deleted_at IS NULL")
+        ),
+        # The expiry purge finds rows deleted past retention by deleted_at alone.
+        Index("ix_tags_deleted_at", "deleted_at", postgresql_where=text("deleted_at IS NOT NULL")),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -25,6 +29,9 @@ class Tag(Base):
     # Set when the tag is archived; NULL means active. Archiving only hides the
     # tag: its task/note/habit links are left alone.
     archived_at = Column(DateTime(timezone=True), nullable=True)
+    # Set when the tag is deleted (moved to the trash); NULL otherwise. Its
+    # links are kept so a restore brings them back; items hide it meanwhile.
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     tasks = relationship(
         "Task",

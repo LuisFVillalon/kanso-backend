@@ -1,7 +1,8 @@
-"""Archiving and restoring tasks, notes and tags."""
+"""Archiving and restoring tasks, notes, tags and habits."""
 
 import pytest
 
+from app.models.habit_model import Habit
 from app.models.note_model import Note
 from app.models.tag_model import Tag
 from app.models.task_model import Task
@@ -12,6 +13,7 @@ KINDS = {
     "task": ("/create-task", {"title": "Write report"}, "/get-tasks", "/del-task", Task),
     "note": ("/create-note", {"title": "Lecture notes"}, "/get-notes", "/del-note", Note),
     "tag": ("/create-tags", {"name": "School"}, "/get-tags", "/del-tag", Tag),
+    "habit": ("/create-habit", {"title": "Stretch"}, "/get-habits", "/del-habit", Habit),
 }
 
 
@@ -88,13 +90,18 @@ def test_archive_endpoints_404_for_missing_or_foreign_rows(client, db, kind, act
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_delete_works_on_archived_rows(client, kind):
+def test_delete_moves_archived_rows_to_the_trash(client, kind):
     _, _, list_path, delete_path, _ = KINDS[kind]
     row = _create(client, kind)
     client.patch(f"/archive-{kind}/{row['id']}")
 
     assert client.delete(f"{delete_path}/{row['id']}").status_code == 200
     assert _ids(client.get(list_path, params={"archived": "true"})) == set()
+    assert _ids(client.get("/get-trash")) == {row["id"]}
+
+    # Restored, it goes back to the archive it was deleted from.
+    assert client.patch(f"/restore-{kind}/{row['id']}").json()["archived_at"] is not None
+    assert _ids(client.get(list_path, params={"archived": "true"})) == {row["id"]}
 
 
 def test_archiving_a_task_cascades_to_its_subtasks(client):

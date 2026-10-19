@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
@@ -8,6 +8,8 @@ from app.crud.task_crud import (
     create_task,
     delete_task,
     get_tasks,
+    purge_task,
+    restore_task,
     unarchive_task,
     update_task,
     update_task_status,
@@ -44,7 +46,7 @@ def delete_task_by_id(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a task owned by the authenticated user."""
+    """Move a task and its subtasks to the trash, where it can be restored for 30 days."""
     return require_found(delete_task(db, task_id, current_user.id), "Task not found")
 
 
@@ -87,3 +89,23 @@ def unarchive_task_by_id(
 ):
     """Restore an archived task, the subtasks archived with it, and any archived parents above it."""
     return require_found(unarchive_task(db, task_id, current_user.id), "Task not found")
+
+
+@router.patch("/restore-task/{task_id}", response_model=Task)
+def restore_task_by_id(
+    task_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Restore a task from the trash, with the subtasks deleted along with it and any deleted parents above it."""
+    return require_found(restore_task(db, task_id, current_user.id), "Task not found in the trash")
+
+
+@router.delete("/purge-task/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def purge_task_by_id(
+    task_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete a task that is in the trash, without waiting out the 30 days."""
+    require_found(purge_task(db, task_id, current_user.id), "Task not found in the trash")

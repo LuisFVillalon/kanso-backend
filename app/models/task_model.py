@@ -8,8 +8,10 @@ from app.models.task_tag_model import task_tags
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
-        # Lists default to active rows only, so index just those per user.
-        Index("ix_tasks_user_id_active", "user_id", postgresql_where=text("archived_at IS NULL")),
+        # Lists default to active, undeleted rows only, so index just those per user.
+        Index(
+            "ix_tasks_user_id_active", "user_id", postgresql_where=text("archived_at IS NULL AND deleted_at IS NULL")
+        ),
         # The calendar activity range reads tasks by due date and by completion time.
         Index("ix_tasks_user_id_due_date_active", "user_id", "due_date", postgresql_where=text("archived_at IS NULL")),
         Index(
@@ -18,6 +20,10 @@ class Task(Base):
             "completed_date",
             postgresql_where=text("archived_at IS NULL"),
         ),
+        # The expiry purge finds rows deleted past retention by deleted_at alone.
+        Index("ix_tasks_deleted_at", "deleted_at", postgresql_where=text("deleted_at IS NOT NULL")),
+        # Detaching subtasks of purged parents, and the FK check on deleting them.
+        Index("ix_tasks_parent_task_id", "parent_task_id", postgresql_where=text("parent_task_id IS NOT NULL")),
     )
 
     id = Column(Integer, primary_key=True)
@@ -35,6 +41,8 @@ class Task(Base):
     user_id = Column(String(36), nullable=True, index=True)
     # Set when the task is archived; NULL means active.
     archived_at = Column(DateTime(timezone=True), nullable=True)
+    # Set when the task is deleted (moved to the trash); NULL otherwise.
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     tags = relationship(
         "Tag",
         secondary=task_tags,

@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from app.schemas.limits import COLOR_MAX, TAG_NAME_MAX
 
@@ -24,5 +25,16 @@ class Tag(TagBase):
     # NULL while active. Archived tags still appear in task/note/habit tag
     # lists, so the client uses this to tell them apart.
     archived_at: datetime | None = None
+    # NULL unless the tag is in the trash.
+    deleted_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+def _drop_deleted_tags(tags):
+    return [t for t in tags if getattr(t, "deleted_at", None) is None]
+
+
+# An item's tags as shown to the client. A deleted tag stays linked to its
+# items so restoring it brings the links back, but until then it is hidden.
+VisibleTags = Annotated[list[Tag], BeforeValidator(_drop_deleted_tags)]

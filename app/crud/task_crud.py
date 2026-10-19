@@ -3,27 +3,33 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.crud.base import archived_filter, get_owned
+from app.crud.base import archived_filter, deleted_filter, get_owned
 from app.crud.tag_crud import set_item_tags
+from app.crud.trash_crud import get_trashed, purge_expired
 from app.models.task_model import Task as TaskModel
 from app.schemas.task_schema import TaskCreate
 
 
 def get_tasks(db: Session, user_id: str, archived: bool = False):
-    """Return the user's active tasks, or only their archived ones when archived=True."""
-    return db.query(TaskModel).filter(TaskModel.user_id == user_id, archived_filter(TaskModel, archived)).all()
+    """Return the user's active tasks, or only their archived ones when archived=True. Deleted tasks are left out."""
+    return (
+        db.query(TaskModel)
+        .filter(TaskModel.user_id == user_id, deleted_filter(TaskModel, False), archived_filter(TaskModel, archived))
+        .all()
+    )
 
 
 def _priority_taken(db: Session, user_id: str, priority: int, exclude_task_id: int = None) -> bool:
     """True if another active task for this user already has the same priority.
 
-    Archived tasks keep their priority but don't hold it: they're hidden from
-    the user, who would otherwise be blocked by a task they can't see.
+    Archived and deleted tasks keep their priority but don't hold it: they're
+    hidden from the user, who would otherwise be blocked by a task they can't see.
     """
     q = db.query(TaskModel).filter(
         TaskModel.user_id == user_id,
         TaskModel.priority == priority,
         TaskModel.archived_at.is_(None),
+        TaskModel.deleted_at.is_(None),
     )
     if exclude_task_id is not None:
         q = q.filter(TaskModel.id != exclude_task_id)
@@ -43,12 +49,7 @@ def _validate_parent_task_id(db: Session, parent_task_id: int, user_id: str) -> 
     """Raise 400 if the parent task doesn't exist or belongs to a different user."""
     if parent_task_id is None:
         return
-    parent_task = (
-        db.query(TaskModel)
-        .filter(TaskModel.id == parent_task_id, TaskModel.user_id == user_id)
-        .first()
-    )
-    if not parent_task:
+    if not get_owned(db, TaskModel, parent_task_id, user_id):
         raise HTTPException(
             status_code=400,
             detail=f"Parent task with ID {parent_task_id} not found",
@@ -85,12 +86,20 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
 
 
 def delete_task(db: Session, task_id: int, user_id: str):
-    """Delete a task. Returns the deleted record, or None if not found."""
+    """Move a task and its subtasks to the trash. Returns None if not found.
+
+    The subtasks get the parent's deleted_at, which is how restore_task and
+    purge_task tell them apart from subtasks deleted on their own.
+    """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:
         return None
-    db.delete(task)
+    stamp = datetime.now(UTC)
+    for t in [task, *_descendants(db, task, user_id)]:
+        t.deleted_at = stamp
+    purge_expired(db)
     db.commit()
+    db.refresh(task)
     return task
 
 
@@ -152,15 +161,19 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     return db_task
 
 
-def _descendants(db: Session, task: TaskModel, user_id: str) -> list[TaskModel]:
-    """Every subtask below a task, at any depth."""
+def _descendants(db: Session, task: TaskModel, user_id: str, deleted: bool = False) -> list[TaskModel]:
+    """Every live subtask below a task, at any depth, or every deleted one when deleted=True."""
     found: list[TaskModel] = []
     seen = {task.id}
     frontier = [task.id]
     while frontier:
         children = (
             db.query(TaskModel)
-            .filter(TaskModel.parent_task_id.in_(frontier), TaskModel.user_id == user_id)
+            .filter(
+                TaskModel.parent_task_id.in_(frontier),
+                TaskModel.user_id == user_id,
+                deleted_filter(TaskModel, deleted),
+            )
             .all()
         )
         children = [c for c in children if c.id not in seen]
@@ -170,14 +183,14 @@ def _descendants(db: Session, task: TaskModel, user_id: str) -> list[TaskModel]:
     return found
 
 
-def _archived_ancestors(db: Session, task: TaskModel, user_id: str) -> list[TaskModel]:
-    """The unbroken chain of archived parents directly above a task."""
+def _hidden_ancestors(db: Session, task: TaskModel, user_id: str, field: str) -> list[TaskModel]:
+    """The unbroken chain of parents directly above a task with `field` (archived_at or deleted_at) set."""
     found: list[TaskModel] = []
     seen = {task.id}
     parent_id = task.parent_task_id
     while parent_id is not None and parent_id not in seen:
-        parent = get_owned(db, TaskModel, parent_id, user_id)
-        if not parent or parent.archived_at is None:
+        parent = get_owned(db, TaskModel, parent_id, user_id, trashed=field == "deleted_at")
+        if not parent or getattr(parent, field) is None:
             break
         seen.add(parent.id)
         found.append(parent)
@@ -219,15 +232,64 @@ def unarchive_task(db: Session, task_id: int, user_id: str):
     if task.archived_at is not None:
         stamp = task.archived_at
         restored = [
-            *_archived_ancestors(db, task, user_id),
+            *_hidden_ancestors(db, task, user_id, "archived_at"),
             task,
             *[t for t in _descendants(db, task, user_id) if t.archived_at == stamp],
         ]
-        for t in restored:
-            t.archived_at = None
-            db.flush()
-            if t.priority is not None and _priority_taken(db, user_id, t.priority, exclude_task_id=t.id):
-                t.priority = None
+        _bring_back(db, restored, "archived_at", user_id)
         db.commit()
         db.refresh(task)
+    return task
+
+
+def _bring_back(db: Session, tasks: list[TaskModel], field: str, user_id: str) -> None:
+    """Clear `field` (archived_at or deleted_at) on tasks coming back into view.
+
+    A task whose priority was taken by another task while it was hidden
+    comes back without a priority rather than duplicating it.
+    """
+    for t in tasks:
+        setattr(t, field, None)
+        db.flush()
+        if t.priority is not None and _priority_taken(db, user_id, t.priority, exclude_task_id=t.id):
+            t.priority = None
+
+
+def restore_task(db: Session, task_id: int, user_id: str):
+    """Restore a task from the trash with the subtasks deleted along with it. Returns None if not in the trash.
+
+    Mirrors unarchive_task: subtasks deleted separately, before the parent,
+    stay in the trash; deleted ancestors are restored too (not their other
+    subtasks), so the task never comes back under a hidden parent; and a
+    priority taken in the meantime is dropped. A task deleted while archived
+    is restored to the archive.
+    """
+    task = get_trashed(db, TaskModel, task_id, user_id)
+    if not task:
+        return None
+    stamp = task.deleted_at
+    restored = [
+        *_hidden_ancestors(db, task, user_id, "deleted_at"),
+        task,
+        *[t for t in _descendants(db, task, user_id, deleted=True) if t.deleted_at == stamp],
+    ]
+    _bring_back(db, restored, "deleted_at", user_id)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def purge_task(db: Session, task_id: int, user_id: str):
+    """Permanently delete a task in the trash, with the subtasks deleted along with it.
+
+    Returns None if not in the trash. Subtasks deleted on their own stay in
+    the trash, detached from the purged parent.
+    """
+    task = get_trashed(db, TaskModel, task_id, user_id)
+    if not task:
+        return None
+    stamp = task.deleted_at
+    for t in [task, *[t for t in _descendants(db, task, user_id, deleted=True) if t.deleted_at == stamp]]:
+        db.delete(t)
+    db.commit()
     return task
