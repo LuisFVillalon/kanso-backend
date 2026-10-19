@@ -35,12 +35,14 @@ def _note_with_session(db, title, ended_at: datetime, minutes: int, archived=Fal
     note = Note(title=title, user_id=USER_ID, archived_at=datetime.now(UTC) if archived else None)
     db.add(note)
     db.flush()
-    db.add(NoteSession(
-        note_id=note.id,
-        user_id=USER_ID,
-        started_at=ended_at - timedelta(minutes=minutes),
-        ended_at=ended_at,
-    ))
+    db.add(
+        NoteSession(
+            note_id=note.id,
+            user_id=USER_ID,
+            started_at=ended_at - timedelta(minutes=minutes),
+            ended_at=ended_at,
+        )
+    )
     db.flush()
     return note
 
