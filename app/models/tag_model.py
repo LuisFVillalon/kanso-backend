@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, Integer, String, UniqueConstraint, text
 from sqlalchemy.orm import relationship
 
 from app.database.database import Base
@@ -14,12 +14,17 @@ class Tag(Base):
         # NULLs are treated as distinct in Postgres, so legacy rows (user_id=NULL)
         # with the same name are also allowed through.
         UniqueConstraint("name", "user_id", name="uq_tags_name_user_id"),
+        # Lists default to active rows only, so index just those per user.
+        Index("ix_tags_user_id_active", "user_id", postgresql_where=text("archived_at IS NULL")),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     color = Column(String)
     user_id = Column(String(36), nullable=True, index=True)
+    # Set when the tag is archived; NULL means active. Archiving only hides the
+    # tag: its task/note/habit links are left alone.
+    archived_at = Column(DateTime(timezone=True), nullable=True)
 
     tasks = relationship(
         "Task",

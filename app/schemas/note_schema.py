@@ -32,5 +32,7 @@ class Note(NoteBase):
     updated_date: datetime
     # user_id set server-side from JWT; exposed in responses, never in requests.
     user_id: str | None = None
+    # Set server-side by /archive-note and /unarchive-note; NULL while active.
+    archived_at: datetime | None = None
 
     model_config = {"from_attributes": True}

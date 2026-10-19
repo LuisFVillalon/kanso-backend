@@ -2,15 +2,15 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from app.crud.base import get_owned
+from app.crud.base import archived_filter, get_owned, set_archived
 from app.crud.tag_crud import get_or_create_tag
 from app.models.note_model import Note as NoteModel
 from app.schemas.note_schema import NoteCreate, NoteUpdate
 
 
-def get_notes(db: Session, user_id: str):
-    """Return all notes owned by the given user."""
-    return db.query(NoteModel).filter(NoteModel.user_id == user_id).all()
+def get_notes(db: Session, user_id: str, archived: bool = False):
+    """Return the user's active notes, or only their archived ones when archived=True."""
+    return db.query(NoteModel).filter(NoteModel.user_id == user_id, archived_filter(NoteModel, archived)).all()
 
 
 def create_note(db: Session, note: NoteCreate, user_id: str):
@@ -62,3 +62,13 @@ def delete_note(db: Session, note_id: int, user_id: str):
     db.delete(db_note)
     db.commit()
     return db_note
+
+
+def archive_note(db: Session, note_id: int, user_id: str):
+    """Archive a note. Returns None if not found."""
+    return set_archived(db, NoteModel, note_id, user_id, archived=True)
+
+
+def unarchive_note(db: Session, note_id: int, user_id: str):
+    """Restore an archived note. Returns None if not found."""
+    return set_archived(db, NoteModel, note_id, user_id, archived=False)

@@ -3,26 +3,36 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.crud.base import get_owned
+from app.crud.base import archived_filter, get_owned
 from app.crud.tag_crud import get_or_create_tag
 from app.models.task_model import Task as TaskModel
 from app.schemas.task_schema import TaskCreate
 
 
-def get_tasks(db: Session, user_id: str):
-    """Return all tasks owned by the given user."""
-    return db.query(TaskModel).filter(TaskModel.user_id == user_id).all()
+def get_tasks(db: Session, user_id: str, archived: bool = False):
+    """Return the user's active tasks, or only their archived ones when archived=True."""
+    return db.query(TaskModel).filter(TaskModel.user_id == user_id, archived_filter(TaskModel, archived)).all()
 
 
-def _validate_priority_unique(db: Session, user_id: str, priority: int, exclude_task_id: int = None) -> None:
-    """Raise 400 if another task for this user already has the same priority."""
+def _priority_taken(db: Session, user_id: str, priority: int, exclude_task_id: int = None) -> bool:
+    """True if another active task for this user already has the same priority.
+
+    Archived tasks keep their priority but don't hold it: they're hidden from
+    the user, who would otherwise be blocked by a task they can't see.
+    """
     q = db.query(TaskModel).filter(
         TaskModel.user_id == user_id,
         TaskModel.priority == priority,
+        TaskModel.archived_at.is_(None),
     )
     if exclude_task_id is not None:
         q = q.filter(TaskModel.id != exclude_task_id)
-    if q.first():
+    return q.first() is not None
+
+
+def _validate_priority_unique(db: Session, user_id: str, priority: int, exclude_task_id: int = None) -> None:
+    """Raise 400 if another active task for this user already has the same priority."""
+    if _priority_taken(db, user_id, priority, exclude_task_id):
         raise HTTPException(
             status_code=400,
             detail=f"Priority {priority} is already assigned to another task.",
@@ -143,3 +153,63 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     db.commit()
     db.refresh(db_task)
     return db_task
+
+
+def _descendants(db: Session, task: TaskModel, user_id: str) -> list[TaskModel]:
+    """Every subtask below a task, at any depth."""
+    found: list[TaskModel] = []
+    seen = {task.id}
+    frontier = [task.id]
+    while frontier:
+        children = (
+            db.query(TaskModel)
+            .filter(TaskModel.parent_task_id.in_(frontier), TaskModel.user_id == user_id)
+            .all()
+        )
+        children = [c for c in children if c.id not in seen]
+        seen.update(c.id for c in children)
+        found.extend(children)
+        frontier = [c.id for c in children]
+    return found
+
+
+def archive_task(db: Session, task_id: int, user_id: str):
+    """Archive a task and its active subtasks. Returns None if not found.
+
+    The subtasks get the parent's archived_at, which is how unarchive_task
+    tells them apart from subtasks archived on their own. Idempotent: an
+    already-archived task keeps its original archived_at.
+    """
+    task = get_owned(db, TaskModel, task_id, user_id)
+    if not task:
+        return None
+    stamp = task.archived_at or datetime.now(UTC)
+    for t in [task, *_descendants(db, task, user_id)]:
+        if t.archived_at is None:
+            t.archived_at = stamp
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def unarchive_task(db: Session, task_id: int, user_id: str):
+    """Restore a task and the subtasks archived along with it. Returns None if not found.
+
+    Subtasks archived separately, before the parent, stay archived. A restored
+    task whose priority was taken by another task while it was archived comes
+    back without a priority rather than duplicating it.
+    """
+    task = get_owned(db, TaskModel, task_id, user_id)
+    if not task:
+        return None
+    if task.archived_at is not None:
+        stamp = task.archived_at
+        restored = [task] + [t for t in _descendants(db, task, user_id) if t.archived_at == stamp]
+        for t in restored:
+            t.archived_at = None
+            db.flush()
+            if t.priority is not None and _priority_taken(db, user_id, t.priority, exclude_task_id=t.id):
+                t.priority = None
+        db.commit()
+        db.refresh(task)
+    return task
