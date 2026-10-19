@@ -101,6 +101,8 @@ Tests: `pip install -r requirements-dev.txt`, then `TEST_DATABASE_URL=postgresql
 
 `fly deploy` builds the Docker image; on start the container runs `alembic upgrade head` and then uvicorn. The app runs in Fly's `iad` region (Ashburn), beside the database in AWS `us-east-1`, since each request makes several database round trips. One machine is kept warm to avoid cold starts.
 
+Merges to `main` deploy automatically: `.github/workflows/ci-deploy.yml` runs ruff and the test suite against a throwaway Postgres on every pull request and push to `main`, and on `main` runs `flyctl deploy --remote-only` only if they pass. The workflow needs a `FLY_API_TOKEN` repository secret holding a deploy token from `fly tokens create deploy`.
+
 ## Author
 
 Luis Fernando Villalon, San Diego State University. [github.com/LuisFVillalon](https://github.com/LuisFVillalon)
