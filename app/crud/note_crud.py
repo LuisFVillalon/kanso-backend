@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from app.crud.base import archived_filter, get_owned, set_archived
-from app.crud.tag_crud import get_or_create_tag
+from app.crud.tag_crud import set_item_tags
 from app.models.note_model import Note as NoteModel
 from app.schemas.note_schema import NoteCreate, NoteUpdate
 
@@ -23,8 +23,7 @@ def create_note(db: Session, note: NoteCreate, user_id: str):
         created_date=now,
         updated_date=now,
     )
-    for tag_data in note.tags:
-        db_note.tags.append(get_or_create_tag(db, tag_data, user_id))
+    set_item_tags(db, db_note, note.tags, user_id)
     db.add(db_note)
     db.commit()
     db.refresh(db_note)
@@ -44,9 +43,7 @@ def update_note(db: Session, note_id: int, note: NoteUpdate, user_id: str):
     db_note.updated_date = datetime.now(UTC)
 
     if note.tags is not None:
-        db_note.tags.clear()
-        for tag_data in note.tags:
-            db_note.tags.append(get_or_create_tag(db, tag_data, user_id))
+        set_item_tags(db, db_note, note.tags, user_id)
         db.flush()
 
     db.commit()

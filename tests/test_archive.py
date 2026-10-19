@@ -161,6 +161,22 @@ def test_attaching_an_archived_tag_by_name_restores_it(client, kind, action):
     assert _ids(client.get("/get-tags", params={"archived": "true"})) == set()
 
 
+@pytest.mark.parametrize("kind", ["task", "note"])
+def test_resaving_an_item_keeps_its_attached_archived_tag_archived(client, kind):
+    tags = [{"name": "School", "color": "#8b5cf6"}]
+    row = _create(client, kind, tags=tags)
+    tag_id = row["tags"][0]["id"]
+    client.patch(f"/archive-tag/{tag_id}")
+
+    resp = client.put(f"/update-{kind}/{row['id']}", json={**KINDS[kind][1], "title": "Renamed", "tags": tags})
+    assert resp.status_code == 200, resp.text
+
+    assert [t["id"] for t in resp.json()["tags"]] == [tag_id]
+    assert resp.json()["tags"][0]["archived_at"] is not None
+    assert _ids(client.get("/get-tags")) == set()
+    assert _ids(client.get("/get-tags", params={"archived": "true"})) == {tag_id}
+
+
 def test_archived_tag_stays_attached_to_tasks_and_notes(client):
     task = _create(client, "task", tags=[{"name": "School", "color": "#8b5cf6"}])
     note = _create(client, "note", tags=[{"name": "School", "color": "#8b5cf6"}])

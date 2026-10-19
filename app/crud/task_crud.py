@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.crud.base import archived_filter, get_owned
-from app.crud.tag_crud import get_or_create_tag
+from app.crud.tag_crud import set_item_tags
 from app.models.task_model import Task as TaskModel
 from app.schemas.task_schema import TaskCreate
 
@@ -77,8 +77,7 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
         parent_task_id=task.parent_task_id,
         user_id=user_id,
     )
-    for tag_data in task.tags:
-        db_task.tags.append(get_or_create_tag(db, tag_data, user_id))
+    set_item_tags(db, db_task, task.tags, user_id)
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
@@ -145,9 +144,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     elif not task.completed:
         db_task.completed_date = None
 
-    db_task.tags.clear()
-    for tag_data in task.tags:
-        db_task.tags.append(get_or_create_tag(db, tag_data, user_id))
+    set_item_tags(db, db_task, task.tags, user_id)
     db.flush()
 
     db.commit()
