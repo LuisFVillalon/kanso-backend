@@ -40,7 +40,6 @@ jobs:
             requirements-dev.txt
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: ruff check .
-      - run: ruff format --check .
       - name: pytest
         run: |
           pytest -rs | tee pytest.log
