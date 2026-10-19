@@ -173,6 +173,21 @@ def _descendants(db: Session, task: TaskModel, user_id: str) -> list[TaskModel]:
     return found
 
 
+def _archived_ancestors(db: Session, task: TaskModel, user_id: str) -> list[TaskModel]:
+    """The unbroken chain of archived parents directly above a task."""
+    found: list[TaskModel] = []
+    seen = {task.id}
+    parent_id = task.parent_task_id
+    while parent_id is not None and parent_id not in seen:
+        parent = get_owned(db, TaskModel, parent_id, user_id)
+        if not parent or parent.archived_at is None:
+            break
+        seen.add(parent.id)
+        found.append(parent)
+        parent_id = parent.parent_task_id
+    return found
+
+
 def archive_task(db: Session, task_id: int, user_id: str):
     """Archive a task and its active subtasks. Returns None if not found.
 
@@ -195,7 +210,9 @@ def archive_task(db: Session, task_id: int, user_id: str):
 def unarchive_task(db: Session, task_id: int, user_id: str):
     """Restore a task and the subtasks archived along with it. Returns None if not found.
 
-    Subtasks archived separately, before the parent, stay archived. A restored
+    Subtasks archived separately, before the parent, stay archived. Archived
+    ancestors are restored too (not their other subtasks), so the task never
+    comes back under a hidden parent. A restored
     task whose priority was taken by another task while it was archived comes
     back without a priority rather than duplicating it.
     """
@@ -204,7 +221,11 @@ def unarchive_task(db: Session, task_id: int, user_id: str):
         return None
     if task.archived_at is not None:
         stamp = task.archived_at
-        restored = [task] + [t for t in _descendants(db, task, user_id) if t.archived_at == stamp]
+        restored = [
+            *_archived_ancestors(db, task, user_id),
+            task,
+            *[t for t in _descendants(db, task, user_id) if t.archived_at == stamp],
+        ]
         for t in restored:
             t.archived_at = None
             db.flush()

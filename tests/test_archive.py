@@ -125,6 +125,42 @@ def test_restoring_a_task_keeps_subtasks_archived_on_their_own(client):
     assert _ids(client.get("/get-tasks", params={"archived": "true"})) == {archived_first["id"]}
 
 
+def test_restoring_a_subtask_restores_its_archived_ancestors_only(client):
+    root = _create(client, "task", title="Root")
+    parent = _create(client, "task", title="Parent", parent_task_id=root["id"])
+    child = _create(client, "task", title="Child", parent_task_id=parent["id"])
+    sibling = _create(client, "task", title="Sibling", parent_task_id=parent["id"])
+    uncle = _create(client, "task", title="Uncle", parent_task_id=root["id"])
+
+    client.patch(f"/archive-task/{root['id']}")
+    restored = client.patch(f"/unarchive-task/{child['id']}")
+    assert restored.status_code == 200, restored.text
+
+    assert _ids(client.get("/get-tasks")) == {root["id"], parent["id"], child["id"]}
+    assert _ids(client.get("/get-tasks", params={"archived": "true"})) == {sibling["id"], uncle["id"]}
+
+
+@pytest.mark.parametrize("kind", ["task", "note"])
+@pytest.mark.parametrize("action", ["create", "update"])
+def test_attaching_an_archived_tag_by_name_restores_it(client, kind, action):
+    tag = _create(client, "tag", name="School")
+    client.patch(f"/archive-tag/{tag['id']}")
+    tags = [{"name": "School", "color": "#8b5cf6"}]
+
+    if action == "create":
+        row = _create(client, kind, tags=tags)
+    else:
+        row = _create(client, kind)
+        resp = client.put(f"/update-{kind}/{row['id']}", json={**KINDS[kind][1], "tags": tags})
+        assert resp.status_code == 200, resp.text
+        row = resp.json()
+
+    assert [t["id"] for t in row["tags"]] == [tag["id"]]
+    assert row["tags"][0]["archived_at"] is None
+    assert _ids(client.get("/get-tags")) == {tag["id"]}
+    assert _ids(client.get("/get-tags", params={"archived": "true"})) == set()
+
+
 def test_archived_tag_stays_attached_to_tasks_and_notes(client):
     task = _create(client, "task", tags=[{"name": "School", "color": "#8b5cf6"}])
     note = _create(client, "note", tags=[{"name": "School", "color": "#8b5cf6"}])

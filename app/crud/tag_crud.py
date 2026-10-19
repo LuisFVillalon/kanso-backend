@@ -9,6 +9,7 @@ from app.schemas.tag_schema import TagCreate
 def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
     """Return an existing tag matching name+user, or add a new one to the session.
 
+    An archived match is restored, since attaching it means the user wants it.
     The caller is responsible for committing the session.  The tag is only
     *added* (not committed) so it can participate in the same transaction as
     the parent task or note.
@@ -21,6 +22,8 @@ def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
     if not tag:
         tag = TagModel(name=tag_data.name, color=tag_data.color, user_id=user_id)
         db.add(tag)
+    else:
+        tag.archived_at = None
     return tag
 
 
