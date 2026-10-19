@@ -22,6 +22,8 @@ class Task(Base):
         ),
         # The expiry purge finds rows deleted past retention by deleted_at alone.
         Index("ix_tasks_deleted_at", "deleted_at", postgresql_where=text("deleted_at IS NOT NULL")),
+        # Detaching subtasks of purged parents, and the FK check on deleting them.
+        Index("ix_tasks_parent_task_id", "parent_task_id", postgresql_where=text("parent_task_id IS NOT NULL")),
     )
 
     id = Column(Integer, primary_key=True)

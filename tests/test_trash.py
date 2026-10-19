@@ -46,8 +46,8 @@ def _ids(resp):
     return {row["id"] for row in resp.json()}
 
 
-def _trash(client, **params):
-    resp = client.get("/get-trash", params=params)
+def _trash(client):
+    resp = client.get("/get-trash")
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -126,7 +126,7 @@ def test_deleted_habits_and_notes_reject_their_own_actions(client):
     assert client.post("/note-session/start", json={"note_id": note["id"]}).status_code == 404
 
 
-def test_trash_lists_newest_first_and_filters_by_kind(client, db):
+def test_trash_lists_newest_first(client, db):
     old = _row(db, "note", deleted_ago=timedelta(days=3))
     newer = _row(db, "habit", deleted_ago=timedelta(days=1))
     task = _create(client, "task")
@@ -137,8 +137,6 @@ def test_trash_lists_newest_first_and_filters_by_kind(client, db):
         ("habit", newer.id),
         ("note", old.id),
     ]
-    assert [i["id"] for i in _trash(client, kind="habit")] == [newer.id]
-    assert client.get("/get-trash", params={"kind": "drawing"}).status_code == 422
 
 
 # ── Owner scoping ────────────────────────────────────────────────────────────

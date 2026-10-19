@@ -8,7 +8,8 @@ Deleting a task, note, tag or habit now sets deleted_at instead of removing
 the row, so it can be restored from the trash for 30 days. Habits also gain
 the archived_at column tasks, notes and tags already have. Lists return only
 active, undeleted rows, so each table's partial index on user_id now covers
-just those, and a partial index on deleted_at serves the expiry purge.
+just those, and a partial index on deleted_at serves the expiry purge, with
+one on tasks.parent_task_id for detaching the subtasks of purged tasks.
 """
 from typing import Sequence, Union
 
@@ -43,12 +44,19 @@ def upgrade() -> None:
             ['deleted_at'],
             postgresql_where=sa.text('deleted_at IS NOT NULL'),
         )
+    op.create_index(
+        'ix_tasks_parent_task_id',
+        'tasks',
+        ['parent_task_id'],
+        postgresql_where=sa.text('parent_task_id IS NOT NULL'),
+    )
 
 
 def downgrade() -> None:
     # Without deleted_at, rows in the trash would reappear as live, so they
     # are deleted for good first (their tag links, habit logs and note
     # sessions cascade). Live subtasks of a trashed task are detached first.
+    op.drop_index('ix_tasks_parent_task_id', table_name='tasks')
     op.execute(
         'UPDATE tasks SET parent_task_id = NULL WHERE deleted_at IS NULL AND parent_task_id IN '
         '(SELECT id FROM tasks WHERE deleted_at IS NOT NULL)'

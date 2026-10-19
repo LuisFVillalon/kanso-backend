@@ -32,28 +32,29 @@ def purge_expired(db: Session) -> None:
 
     One delete per table, served by its deleted_at index. Tag links, habit
     logs and note sessions go with their rows (ON DELETE CASCADE); subtasks
-    of a purged task are detached first. Concurrent runs are safe: a row
-    another run already deleted is just skipped.
+    of a purged task are detached first, found by the parent_task_id index.
+    Concurrent runs are safe: a row another run already deleted is just
+    skipped.
     """
     cutoff = trash_cutoff()
-    db.execute(
-        update(Task)
-        .where(Task.parent_task_id.in_(select(Task.id).where(Task.deleted_at <= cutoff)))
-        .values(parent_task_id=None)
-        .execution_options(synchronize_session="fetch")
-    )
+    expired_task_ids = db.scalars(select(Task.id).where(Task.deleted_at <= cutoff)).all()
+    if expired_task_ids:
+        db.execute(
+            update(Task)
+            .where(Task.parent_task_id.in_(expired_task_ids))
+            .values(parent_task_id=None)
+            .execution_options(synchronize_session="fetch")
+        )
     for model in TRASHABLE_MODELS.values():
         db.execute(delete(model).where(model.deleted_at <= cutoff).execution_options(synchronize_session="fetch"))
 
 
-def get_trash(db: Session, user_id: str, kind: str | None = None) -> list[TrashItem]:
-    """List the user's deleted items, newest first, optionally of one kind only."""
+def get_trash(db: Session, user_id: str) -> list[TrashItem]:
+    """List the user's deleted items, newest first."""
     purge_expired(db)
     db.commit()
-    kinds = [kind] if kind else list(TRASHABLE_MODELS)
     items = []
-    for k in kinds:
-        model = TRASHABLE_MODELS[k]
+    for k, model in TRASHABLE_MODELS.items():
         rows = db.query(model).filter(model.user_id == user_id, model.deleted_at.isnot(None)).all()
         items.extend(
             TrashItem(
