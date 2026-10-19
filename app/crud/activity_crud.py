@@ -22,9 +22,7 @@ def _local_midnight_utc(day: date, tz: ZoneInfo) -> datetime:
     return datetime.combine(day, time.min, tzinfo=tz).astimezone(UTC).replace(tzinfo=None)
 
 
-def get_calendar_activity(
-    db: Session, user_id: str, start: date, end: date, tz: ZoneInfo
-) -> CalendarActivity:
+def get_calendar_activity(db: Session, user_id: str, start: date, end: date, tz: ZoneInfo) -> CalendarActivity:
     """Everything the user planned or did across local days start..end inclusive:
     tasks due in the range, tasks completed in it, note editing sessions and
     habit completions. Archived tasks and notes are left out.
