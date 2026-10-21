@@ -17,6 +17,15 @@ class RateLimiter:
         self._calls: dict[str, deque[float]] = defaultdict(deque)
 
     def check(self, key: str) -> None:
+        """Raise 429 if `key` is at its limit, else count this call."""
+        self.ensure_room(key)
+        self.record(key)
+
+    def ensure_room(self, key: str) -> None:
+        """Raise 429 if `key` is at its limit, without counting anything.
+
+        With `record`, this limits only some calls, e.g. failed attempts.
+        """
         now = time.monotonic()
         calls = self._calls[key]
         while calls and now - calls[0] > self.period:
@@ -27,4 +36,6 @@ class RateLimiter:
                 detail="Too many requests. Please wait a moment and try again.",
                 headers={"Retry-After": str(int(self.period))},
             )
-        calls.append(now)
+
+    def record(self, key: str) -> None:
+        self._calls[key].append(time.monotonic())

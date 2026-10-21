@@ -2,9 +2,9 @@
 Account-management endpoints.
 
 POST /update-password
-  Updates the authenticated user's password via the Supabase Admin API.
-  Rejected with 403 for OAuth accounts (e.g. Google) and demo sandboxes —
-  neither has a local credential to update.
+  Checks the user's current password with Supabase Auth, then updates it via
+  the Supabase Admin API. Rejected with 403 for OAuth accounts (e.g. Google)
+  and demo sandboxes — neither has a local credential to update.
 
 DELETE /delete-account
   1. Removes all user data from the database (every model in
@@ -23,13 +23,17 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
-from app.core.supabase_admin import delete_auth_user, update_auth_user
+from app.core.rate_limit import RateLimiter
+from app.core.supabase_admin import delete_auth_user, update_auth_user, verify_password
 from app.crud.account_crud import delete_user_rows
 from app.database.database import get_db
 
 router = APIRouter()
 
 _OAUTH_PROVIDERS = {"google", "github", "facebook", "twitter", "apple"}
+
+# Failed current-password checks allowed per user, to stop guessing.
+_password_check_limiter = RateLimiter(max_calls=5, period=15 * 60)
 
 
 def _reject_demo_sandbox(user: UserInfo) -> None:
@@ -108,6 +112,7 @@ def _check_password(password: str, email: str | None = None) -> None:
 # ── Update password ───────────────────────────────────────────────────────────
 
 class PasswordUpdateRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(max_length=256)
 
     @field_validator("new_password")
@@ -124,11 +129,15 @@ def update_password(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """
-    Sets a new password for the authenticated user.
+    Sets a new password for the authenticated user, once their current one
+    checks out.
 
     Returns 403 if the account uses a federated identity (Google, GitHub, etc.)
     and has never had a local password set — updating a credential that doesn't
     exist would create a shadow credential and is a security risk.
+
+    Returns 403 if the current password is wrong, and 429 after 5 wrong ones
+    in 15 minutes.
 
     Returns 422 if the password violates the NIST-aligned policy.
     """
@@ -141,6 +150,14 @@ def update_password(
                 f"Your account uses {current_user.provider.capitalize()} sign-in. "
                 "Password changes must be made through your identity provider."
             ),
+        )
+
+    _password_check_limiter.ensure_room(current_user.id)
+    if not current_user.email or not verify_password(current_user.email, body.current_password):
+        _password_check_limiter.record(current_user.id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current password is incorrect.",
         )
 
     _check_password(body.new_password, current_user.email)
