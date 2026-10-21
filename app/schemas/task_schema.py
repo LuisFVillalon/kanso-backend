@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 from app.schemas.limits import (
     CANVAS_ID_MAX,
@@ -79,6 +79,9 @@ class TaskCreate(TaskBase):
     tags: list[TagCreate] = Field([], max_length=TAGS_PER_ITEM_MAX)
     canvas_assignment_id: int | None = Field(None, ge=1, le=CANVAS_ID_MAX)
     canvas_html_url: str | None = Field(None, max_length=CANVAS_URL_MAX)
+    # Canvas's due_at for the assignment when the task is linked, so the first
+    # sync can tell a due date the user changed from one Canvas changed.
+    canvas_due_at: AwareDatetime | None = None
 
     @field_validator("canvas_html_url")
     @classmethod

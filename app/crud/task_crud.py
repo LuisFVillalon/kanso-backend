@@ -196,6 +196,7 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
         reminder_minutes=task.reminder_minutes,
         canvas_assignment_id=task.canvas_assignment_id,
         canvas_html_url=task.canvas_html_url,
+        canvas_due_at=task.canvas_due_at if task.canvas_assignment_id is not None else None,
         user_id=user_id,
     )
     set_item_tags(db, db_task, task.tags, user_id)
@@ -309,7 +310,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     if assignment_id is not None and not task.completed and (relinked or db_task.completed):
         _validate_canvas_unique(db, user_id, assignment_id, exclude_task_id=task_id)
     if relinked:
-        db_task.canvas_due_at = None
+        db_task.canvas_due_at = task.canvas_due_at if assignment_id is not None else None
 
     # Only a changed link is checked, so re-saving a task under its current
     # parent works even for links made before the one-level rule.

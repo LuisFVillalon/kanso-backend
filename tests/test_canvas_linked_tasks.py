@@ -210,6 +210,29 @@ def test_sync_clears_the_due_date_when_canvas_drops_it(connected, db, canvas):
     assert (row.due_date, row.due_time) == (None, None)
 
 
+def test_the_first_sync_keeps_a_due_date_changed_after_adding(connected, db, canvas):
+    task = _create(connected, **_link(302), canvas_due_at=SOON, due_date="2026-01-01", due_time="09:00:00")
+    result = _by_task(_sync(connected))[task["id"]]
+    assert (result["synced"], result["due_changed"]) == (True, False)
+    row = _task(db, task["id"])
+    assert (row.due_date.date().isoformat(), row.due_time.isoformat()) == ("2026-01-01", "09:00:00")
+
+
+def test_relinking_stores_the_new_assignments_due_date(connected, db, canvas):
+    task = _create(connected, **_link(301), canvas_due_at=PAST)
+    resp = connected.put(f"/update-task/{task['id']}", json={"title": "Task", **_link(302), "canvas_due_at": SOON,
+                                                              "due_date": "2026-01-01", "due_time": "09:00:00"})
+    assert resp.status_code == 200
+    assert datetime.fromisoformat(SOON) == _task(db, task["id"]).canvas_due_at
+    assert _by_task(_sync(connected))[task["id"]]["due_changed"] is False
+    assert _task(db, task["id"]).due_date.date().isoformat() == "2026-01-01"
+
+
+def test_a_canvas_due_at_without_a_time_zone_is_refused(client):
+    resp = client.post("/create-task", json={"title": "Task", **_link(301), "canvas_due_at": "2026-10-23T23:59:00"})
+    assert resp.status_code == 422
+
+
 def test_sync_keeps_a_due_date_the_user_changed(connected, db, canvas):
     task = _create(connected, **_link(302))
     _sync(connected)
