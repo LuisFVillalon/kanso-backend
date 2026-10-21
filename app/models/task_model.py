@@ -70,6 +70,9 @@ class Task(Base):
     # for every other task. Canvas ids can exceed 32 bits.
     canvas_assignment_id = Column(BigInteger, nullable=True)
     canvas_html_url = Column(Text, nullable=True)
+    # The assignment's due_at as of the last sync, so a sync moves the task's
+    # due date only when Canvas's changed, not when the user edited it.
+    canvas_due_at = Column(DateTime(timezone=True), nullable=True)
     user_id = Column(String(36), nullable=True, index=True)
     # Set when the task is archived; NULL means active.
     archived_at = Column(DateTime(timezone=True), nullable=True)

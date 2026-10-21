@@ -59,6 +59,23 @@ def _open_canvas_task(
     return q.order_by(TaskModel.id).first()
 
 
+def _drop_taken_canvas_link(db: Session, user_id: str, task: TaskModel) -> None:
+    """Unlink an open task from its Canvas assignment if another open task already follows it.
+
+    Like a taken priority, for tasks reopened, unarchived or restored while
+    another task took over the assignment. The page link is kept.
+    """
+    if (
+        task.canvas_assignment_id is not None
+        and not task.completed
+        and task.archived_at is None
+        and task.deleted_at is None
+        and _open_canvas_task(db, user_id, task.canvas_assignment_id, exclude_task_id=task.id)
+    ):
+        task.canvas_assignment_id = None
+        task.canvas_due_at = None
+
+
 def _validate_canvas_unique(
     db: Session, user_id: str, canvas_assignment_id: int, exclude_task_id: int | None = None
 ) -> None:
@@ -243,6 +260,7 @@ def update_task_status(db: Session, task_id: int, user_id: str, with_linked: boo
     now = datetime.now(UTC)
     task.completed = not task.completed
     task.completed_date = now if task.completed else None
+    _drop_taken_canvas_link(db, user_id, task)
     if with_linked and task.completed:
         open_children = (
             db.query(TaskModel)
@@ -282,15 +300,16 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
         return None
 
     canvas_fields = [field for field in _CANVAS_FIELDS if field in task.model_fields_set]
-    # Like priority, only a newly set link is checked, so a task already
+    assignment_id = (
+        task.canvas_assignment_id if "canvas_assignment_id" in canvas_fields else db_task.canvas_assignment_id
+    )
+    relinked = assignment_id != db_task.canvas_assignment_id
+    # Only a newly set or reopened link is checked, so a task already
     # following an assignment re-saves as it is.
-    if (
-        "canvas_assignment_id" in canvas_fields
-        and task.canvas_assignment_id is not None
-        and task.canvas_assignment_id != db_task.canvas_assignment_id
-        and not task.completed
-    ):
-        _validate_canvas_unique(db, user_id, task.canvas_assignment_id, exclude_task_id=task_id)
+    if assignment_id is not None and not task.completed and (relinked or db_task.completed):
+        _validate_canvas_unique(db, user_id, assignment_id, exclude_task_id=task_id)
+    if relinked:
+        db_task.canvas_due_at = None
 
     # Only a changed link is checked, so re-saving a task under its current
     # parent works even for links made before the one-level rule.
@@ -420,13 +439,15 @@ def _bring_back(db: Session, tasks: list[TaskModel], field: str, user_id: str) -
     """Clear `field` (archived_at or deleted_at) on tasks coming back into view.
 
     A task whose priority was taken by another task while it was hidden
-    comes back without a priority rather than duplicating it.
+    comes back without a priority rather than duplicating it, and one whose
+    Canvas assignment another open task took over comes back unlinked from it.
     """
     for t in tasks:
         setattr(t, field, None)
         db.flush()
         if t.priority is not None and _priority_taken(db, user_id, t.priority, exclude_task_id=t.id):
             t.priority = None
+        _drop_taken_canvas_link(db, user_id, t)
 
 
 def _keeps_parent_on_restore(db: Session, task: TaskModel, user_id: str) -> bool:

@@ -5,9 +5,11 @@ assignment.
 Such a task has canvas_assignment_id and canvas_html_url set. sync() reads
 each open linked task's assignment from Canvas and reports whether it has
 been submitted, so the frontend can offer to complete the task; it never
-completes a task itself. When the assignment's due date differs from the
-task's, the task's due_date and due_time are moved to it, in the caller's
-time zone, to the minute (an assignment with no due date clears them).
+completes a task itself. When the assignment's due date differs from the one
+the last sync saw (canvas_due_at), the task's due_date and due_time are moved
+to it, in the caller's time zone, to the minute (an assignment with no due
+date clears them). A due date the user changed while Canvas's stayed the
+same is left alone.
 
 The course comes from canvas_html_url (/courses/{id}/...), which must be on
 the connection's Canvas host. Each course's assignments are read through
@@ -68,18 +70,21 @@ def _unsynced(task_id: int) -> CanvasLinkedTaskSync:
 
 
 def _apply(task: TaskModel, assignment: CanvasAssignment, zone: ZoneInfo) -> CanvasLinkedTaskSync:
-    """Move the task's due date to the assignment's if they differ, and report its state."""
-    if assignment.due_at is None:
-        due_date, due_time = None, None
-    else:
-        local = assignment.due_at.astimezone(zone)
-        due_date, due_time = local.date(), local.time().replace(second=0, microsecond=0)
-    current_date = task.due_date.date() if isinstance(task.due_date, datetime) else task.due_date
-    current_time = task.due_time.replace(second=0, microsecond=0) if task.due_time else None
-    changed = (due_date, due_time) != (current_date, current_time)
-    if changed:
-        task.due_date = datetime.combine(due_date, time()) if due_date else None
-        task.due_time = due_time
+    """Move the task's due date to the assignment's if Canvas changed it since the last sync, and report its state."""
+    changed = False
+    if assignment.due_at != task.canvas_due_at:
+        if assignment.due_at is None:
+            due_date, due_time = None, None
+        else:
+            local = assignment.due_at.astimezone(zone)
+            due_date, due_time = local.date(), local.time().replace(second=0, microsecond=0)
+        current_date = task.due_date.date() if isinstance(task.due_date, datetime) else task.due_date
+        current_time = task.due_time.replace(second=0, microsecond=0) if task.due_time else None
+        changed = (due_date, due_time) != (current_date, current_time)
+        if changed:
+            task.due_date = datetime.combine(due_date, time()) if due_date else None
+            task.due_time = due_time
+        task.canvas_due_at = assignment.due_at
     return CanvasLinkedTaskSync(
         task_id=task.id,
         synced=True,

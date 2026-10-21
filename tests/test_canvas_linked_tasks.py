@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from app.core import canvas_cache
 from app.crud import canvas_link_crud, canvas_sample
 from app.crud.canvas_crud import get_connection
 from app.models.task_model import Task
@@ -127,6 +128,42 @@ def test_linking_an_existing_task_to_a_followed_assignment_is_a_409(client):
     assert client.put(f"/update-task/{first['id']}", json={"title": "Edited", **_link(301)}).status_code == 200
 
 
+def test_reopening_a_task_through_update_while_another_follows_its_assignment_is_a_409(client):
+    old = _create(client, completed=True, **_link(301))
+    new = _create(client, **_link(301))
+    resp = client.put(f"/update-task/{old['id']}", json={"title": "Task", "completed": False})
+    assert (resp.status_code, resp.json()["detail"]["task_id"]) == (409, new["id"])
+
+
+def test_a_task_reopened_toggled_unarchived_or_restored_over_a_taken_assignment_comes_back_unlinked(client):
+    url = _link(301)["canvas_html_url"]
+    completed = _create(client, title="Completed", **_link(301))
+    client.patch(f"/update-task-status/{completed['id']}")
+    archived = _create(client, title="Archived", **_link(301))
+    client.patch(f"/archive-task/{archived['id']}")
+    deleted = _create(client, title="Deleted", **_link(301))
+    client.delete(f"/del-task/{deleted['id']}")
+    current = _create(client, title="Current", **_link(301))
+
+    for resp in (
+        client.patch(f"/update-task-status/{completed['id']}"),
+        client.patch(f"/unarchive-task/{archived['id']}"),
+        client.patch(f"/restore-task/{deleted['id']}"),
+    ):
+        assert resp.status_code == 200
+        assert (resp.json()["canvas_assignment_id"], resp.json()["canvas_html_url"]) == (None, url)
+    tasks = {t["id"]: t for t in client.get("/get-tasks").json()}
+    assert tasks[current["id"]]["canvas_assignment_id"] == 301
+
+
+def test_a_task_reopened_with_its_assignment_free_keeps_its_link(client):
+    task = _create(client, **_link(301))
+    client.patch(f"/update-task-status/{task['id']}")
+    assert client.patch(f"/update-task-status/{task['id']}").json()["canvas_assignment_id"] == 301
+    client.patch(f"/archive-task/{task['id']}")
+    assert client.patch(f"/unarchive-task/{task['id']}").json()["canvas_assignment_id"] == 301
+
+
 # ── Sync ─────────────────────────────────────────────────────────────────────
 
 def test_sync_reports_submitted_assignments_without_completing_them(connected, db, canvas):
@@ -163,12 +200,40 @@ def test_sync_leaves_a_matching_due_date_alone(connected, db, canvas):
 
 
 def test_sync_clears_the_due_date_when_canvas_drops_it(connected, db, canvas):
-    canvas.lists["/api/v1/courses/11/assignments"][0][1]["due_at"] = None
     task = _create(connected, **_link(302), due_date="2026-01-01", due_time="09:00:00")
+    _sync(connected)
+    canvas.lists["/api/v1/courses/11/assignments"][0][1]["due_at"] = None
+    canvas_cache.clear()
     result = _by_task(_sync(connected))[task["id"]]
     assert (result["due_changed"], result["due_at"]) == (True, None)
     row = _task(db, task["id"])
     assert (row.due_date, row.due_time) == (None, None)
+
+
+def test_sync_keeps_a_due_date_the_user_changed(connected, db, canvas):
+    task = _create(connected, **_link(302))
+    _sync(connected)
+    resp = connected.put(f"/update-task/{task['id']}", json={"title": "Task", "due_date": "2026-01-01",
+                                                              "due_time": "09:00:00"})
+    assert resp.status_code == 200
+    canvas_cache.clear()
+    result = _by_task(_sync(connected))[task["id"]]
+    assert (result["synced"], result["due_changed"]) == (True, False)
+    row = _task(db, task["id"])
+    assert (row.due_date.date().isoformat(), row.due_time.isoformat()) == ("2026-01-01", "09:00:00")
+
+
+def test_sync_follows_canvas_moving_the_due_date_after_a_user_edit(connected, db, canvas):
+    task = _create(connected, **_link(302))
+    _sync(connected)
+    connected.put(f"/update-task/{task['id']}", json={"title": "Task", "due_date": "2026-01-01",
+                                                       "due_time": "09:00:00"})
+    canvas.lists["/api/v1/courses/11/assignments"][0][1]["due_at"] = PAST
+    canvas_cache.clear()
+    result = _by_task(_sync(connected))[task["id"]]
+    assert result["due_changed"] is True
+    row = _task(db, task["id"])
+    assert (row.due_date.date().isoformat(), row.due_time.isoformat()) == _due(PAST)
 
 
 def test_sync_uses_the_panels_cache(connected, canvas):
