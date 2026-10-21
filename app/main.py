@@ -7,11 +7,13 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.crypto import EncryptionKeyError, check_key
 from app.crud.notification_crud import prune_states
 from app.crud.trash_crud import purge_expired
 from app.database.database import SessionLocal, check_db_connection
 from app.routers import (
     calendar_router,
+    canvas_router,
     debrief_router,
     demo_router,
     drawing_router,
@@ -53,6 +55,11 @@ async def lifespan(app: FastAPI):
         )
 
     try:
+        check_key()
+    except EncryptionKeyError as exc:
+        warnings.warn(f"{exc} Until then the Canvas endpoints return 503.", stacklevel=1)
+
+    try:
         check_db_connection()
     except Exception as exc:
         warnings.warn(f"Startup DB check failed (app will still start): {exc}", stacklevel=1)
@@ -71,7 +78,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="kanso API",
-    description="Tasks, notes, habits, mood check-ins, notifications and daily-debrief API behind the kanso web app.",
+    description="Tasks, notes, habits, mood check-ins, notifications, daily-debrief and Canvas API behind the kanso web app.",
     lifespan=lifespan,
 )
 
@@ -96,6 +103,7 @@ app.include_router(demo_router.router)
 app.include_router(trash_router.router)
 app.include_router(notifications_router.router)
 app.include_router(mood_router.router)
+app.include_router(canvas_router.router)
 
 
 @app.get("/", include_in_schema=False)

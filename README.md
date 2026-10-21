@@ -5,7 +5,7 @@ The API behind [kanso](https://kanso-web-app.vercel.app), a productivity app for
 | Repository | Role |
 |---|---|
 | [kanso-frontend](https://github.com/LuisFVillalon/kanso-frontend) | Next.js web app (start here for the full architecture) |
-| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, mood check-ins, profile, daily debrief, notifications, demo sandboxes |
+| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, mood check-ins, profile, daily debrief, notifications, Canvas LMS connection, demo sandboxes |
 | [kanso-ai](https://github.com/LuisFVillalon/kanso-ai) | LLM-backed learning-resource recommendations |
 
 Interactive API reference: `/docs` on any running instance.
@@ -18,6 +18,7 @@ Interactive API reference: `/docs` on any running instance.
 - **Per-visitor demo sandboxes.** `POST /demo/seed` accepts only Supabase *anonymous* users and fills their sandbox with sample data dated relative to the visitor's local day. A background task deletes sandboxes older than a day, both their rows and their auth users.
 - **Timezone-correct logic.** The server runs in UTC. Habit streaks, "due today" and the daily debrief take the caller's `local_date`/`local_time` rather than the server clock, and note time totals take the caller's UTC offset.
 - **A rule-based daily debrief.** `GET /daily-debrief` combines overdue and due-today tasks, today's completions, habit status and workload capacity (committed vs. available minutes, respecting rest days) into a prioritized "focus next" list. No LLM is involved.
+- **Third-party tokens encrypted at rest.** A user's Canvas access token is stored only as AES-256-GCM ciphertext, with the key in a Fly secret rather than the database, and is never sent back to the browser.
 - **Input bounds and rate limits.** Request schemas cap field lengths and list sizes; demo seeding is rate-limited per user.
 
 ## Data model
@@ -32,14 +33,15 @@ erDiagram
     TASKS ||--o{ TASKS : "parent / linked tasks"
 ```
 
-Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker), `drawings` (the doodle canvas) and `notification_preferences`; `notification_states` holds read and dismissed state per notification, and `mood_checkins` holds one mood check-in per day, week or month. Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
+Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker), `drawings` (the doodle canvas), `notification_preferences` and `canvas_connections` (the encrypted Canvas token); `notification_states` holds read and dismissed state per notification, and `mood_checkins` holds one mood check-in per day, week or month. Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
 
 ## Project structure
 
 ```
 app/
   main.py        # App, CORS, router registration, /health
-  core/          # auth.py (JWT verification), supabase_admin.py, rate_limit.py, http_utils.py
+  core/          # auth.py (JWT verification), supabase_admin.py, rate_limit.py, http_utils.py,
+                 # crypto.py (token encryption), canvas_client.py (Canvas API calls)
   routers/       # One per domain; thin handlers that depend on get_current_user + get_db
   crud/          # Queries and business logic (streaks, debrief, demo seed, account deletion)
   models/        # SQLAlchemy models
@@ -49,7 +51,7 @@ tests/           # pytest suite (needs a throwaway Postgres, see below)
 alembic/         # Migrations (date-prefixed); run automatically on every deploy
 ```
 
-Routes use verb-style paths (`/get-tasks`, `/create-task`, `/update-task/{id}`, `/del-task/{id}`). Each domain has one file per layer: `routers/` → `crud/` → `models/` + `schemas/`.
+Routes use verb-style paths (`/get-tasks`, `/create-task`, `/update-task/{id}`, `/del-task/{id}`), except the Canvas ones, which are one resource under `/canvas` with HTTP methods. Each domain has one file per layer: `routers/` → `crud/` → `models/` + `schemas/`.
 
 ## Endpoints
 
@@ -69,6 +71,7 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 | Notifications | `GET /get-notifications?tz=` · `POST /mark-notifications-read` · `POST /mark-all-notifications-read?tz=` · `POST /dismiss-notifications` · `GET /get-notification-preferences` · `PATCH /update-notification-preferences` |
 | Profile & settings | `GET /get-profile` · `POST /save-profile` · `GET /get-calendar-settings` · `PATCH /update-calendar-settings` |
 | Doodle canvas | `GET /get-drawing` · `POST /save-drawing` · `DELETE /delete-drawing` |
+| Canvas | `GET /canvas/connection` · `PUT /canvas/connection` · `POST /canvas/connection/test` · `PATCH /canvas/connection` · `DELETE /canvas/connection` (not for demo sandboxes) |
 | Account | `POST /update-password` (email accounts only) · `DELETE /delete-account` |
 | Demo | `POST /demo/seed?local_date=` (anonymous users only) |
 
@@ -108,6 +111,8 @@ Only open tasks with a `due_date` count, and reminders and final warnings also n
 
 The profile's `mood_checkins` settings say which check-ins the dashboard nudges for: `daily` (default on), `weekly` and `monthly` (default off), `remind` (`shutoff`, `shutoff+30` or `off`, default `shutoff`, i.e. at "Call it a day") and `show_in_reports` (default on). `GET /get-profile` returns them with defaults filled in; `POST /save-profile` merges the fields given into the saved ones, a `null` field restores its default and a `null` `mood_checkins` restores them all. The demo sandbox comes with about 60 days of check-ins.
 
+**Canvas.** A user connects their school's Canvas LMS with a personal access token (Canvas → Account → Settings → New access token) and the school's Canvas address. `PUT /canvas/connection` takes `{"base_url", "token"}`: the address may be a bare host or any page URL on it and is reduced to `https://host`; it must be https on a public DNS name, with no IP literal, custom port or credentials, and every address it resolves to must be public, since the server calls it. The token is checked with Canvas (`GET /users/self`) before anything is stored, so a failed connect or replace leaves the current connection as it was; its expiry is read from Canvas's list of the user's tokens when Canvas allows it. The token is then encrypted with AES-256-GCM, bound to the user's id, and stored in `canvas_connections`; it is decrypted only to call Canvas and is never returned. `GET /canvas/connection` returns the masked status: `connected`, `status`, `base_url`, `token_last4` (for "Connected · ends in …xxxx"), the Canvas account's id and name, `token_expires_at`, `hidden_course_ids` and timestamps. `status` is `active`, `invalid` (Canvas rejected the token, or it is past its expiry date: show "Reconnect Canvas") or `error` (Canvas couldn't be reached on the last test). `POST /canvas/connection/test` re-checks the token and returns the updated status; an expired token is marked invalid without calling Canvas. The same `PUT` replaces or reconnects; a token for a different Canvas account or school is refused with 409 unless the body adds `"allow_account_change": true`, which also resets `hidden_course_ids`. `PATCH /canvas/connection` takes `{"hidden_course_ids": [...]}` (the courses unticked under "Courses to show", up to 500). `DELETE /canvas/connection` deletes the row and token for good, with no trash; account deletion and the demo reset remove it too. Demo sandboxes get 403 on every Canvas route. Connect and test are limited to 10 calls a minute per user. Canvas failures return a code as the `detail`: `canvas_url_invalid`, `canvas_not_canvas` (the host didn't answer like Canvas), `canvas_token_invalid`, `canvas_forbidden` (422), `canvas_account_changed` (409), `canvas_unavailable` (502: Canvas down, slow or rate-limiting), `canvas_not_connected` (404) and `canvas_not_configured` (503: the server has no `CANVAS_TOKEN_KEY`).
+
 `GET /health` is public and used by Fly.io health checks.
 
 ## Running locally
@@ -129,6 +134,7 @@ uvicorn app.main:app --reload     # http://localhost:8000/docs
 | `SUPABASE_URL` | Yes | Supabase project URL, used to fetch the JWKS for token verification |
 | `SUPABASE_SERVICE_ROLE_KEY` | For account & demo endpoints | Service-role key for the Supabase Admin API |
 | `SUPABASE_JWT_SECRET` | Only for HS256 projects | Legacy symmetric JWT secret |
+| `CANVAS_TOKEN_KEY` | For the Canvas endpoints | 32 random bytes, base64-encoded, that encrypt stored Canvas tokens. Generate one with `python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"` and set it with `fly secrets set CANVAS_TOKEN_KEY=<key>`. Without it the app starts with a warning and the Canvas endpoints return 503. Losing or changing it makes stored tokens undecryptable, so users would have to reconnect. To rotate, set `CANVAS_TOKEN_KEY_V2` (then `_V3`, ...): new tokens use the highest version and older keys keep decrypting until every row is re-encrypted. |
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS origins (default: `http://localhost:3000,https://kanso-web-app.vercel.app`) |
 
 Linting: `ruff check .` (config in `pyproject.toml`).
