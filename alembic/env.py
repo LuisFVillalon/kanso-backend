@@ -25,6 +25,7 @@ from app.models import (  # ensure every model is visible to autogenerate
     habit_log_model,
     habit_model,
     habit_tag_model,
+    mood_checkin_model,
     note_model,
     note_session_model,
     note_tag_model,

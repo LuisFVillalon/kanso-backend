@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.calendar_settings_model import CalendarSettings
 from app.models.drawing_model import Drawing
 from app.models.habit_model import Habit
+from app.models.mood_checkin_model import MoodCheckin
 from app.models.note_model import Note
 from app.models.notification_model import NotificationPreferences, NotificationState
 from app.models.profile_model import Profile
@@ -15,6 +16,7 @@ from app.models.task_model import Task
 # from their parents at the database level.
 USER_OWNED_MODELS = (
     Note, Task, Habit, Tag, Profile, Drawing, CalendarSettings, NotificationPreferences, NotificationState,
+    MoodCheckin,
 )
 
 

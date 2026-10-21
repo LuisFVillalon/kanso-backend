@@ -16,6 +16,7 @@ from app.routers import (
     demo_router,
     drawing_router,
     habits_router,
+    mood_router,
     notes_router,
     notifications_router,
     profile_router,
@@ -70,7 +71,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="kanso API",
-    description="Tasks, notes, habits, notifications and daily-debrief API behind the kanso web app.",
+    description="Tasks, notes, habits, mood check-ins, notifications and daily-debrief API behind the kanso web app.",
     lifespan=lifespan,
 )
 
@@ -94,6 +95,7 @@ app.include_router(debrief_router.router)
 app.include_router(demo_router.router)
 app.include_router(trash_router.router)
 app.include_router(notifications_router.router)
+app.include_router(mood_router.router)
 
 
 @app.get("/", include_in_schema=False)
