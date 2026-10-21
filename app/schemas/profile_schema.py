@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.schemas.limits import SHORT_MAX
+from app.schemas.mood_schema import MoodCheckinSettingsUpdate, ResolvedMoodSettings
 
 _Short = Field(None, max_length=SHORT_MAX)
 
@@ -21,6 +22,8 @@ class ProfileSave(BaseModel):
     daily_brief_collapsed: bool | None = None
     dashboard_view: str | None = _Short
     notes_view_mode: str | None = _Short
+    # Merges into the saved settings; null restores every default.
+    mood_checkins: MoodCheckinSettingsUpdate | None = None
 
 
 class ProfileOut(BaseModel):
@@ -39,5 +42,6 @@ class ProfileOut(BaseModel):
     daily_brief_collapsed: bool | None = None
     dashboard_view: str | None = None
     notes_view_mode: str | None = None
+    mood_checkins: ResolvedMoodSettings = None
 
     model_config = {"from_attributes": True}

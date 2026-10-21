@@ -18,3 +18,8 @@ DRAWING_DATA_URL_MAX = 5_000_000
 REMINDER_MINUTES_MAX = 7 * 24 * 60
 # Notification ids per mark-read or dismiss request.
 NOTIFICATION_IDS_MAX = 200
+# Mood check-in text fields and tags.
+MOOD_NOTE_MAX = 280
+MOOD_HIGHLIGHT_MAX = 120
+MOOD_WORD_MAX = 24
+MOOD_TAGS_PER_CHECKIN_MAX = 20

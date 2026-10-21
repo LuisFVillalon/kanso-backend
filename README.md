@@ -5,7 +5,7 @@ The API behind [kanso](https://kanso-web-app.vercel.app), a productivity app for
 | Repository | Role |
 |---|---|
 | [kanso-frontend](https://github.com/LuisFVillalon/kanso-frontend) | Next.js web app (start here for the full architecture) |
-| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, profile, daily debrief, notifications, demo sandboxes |
+| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, mood check-ins, profile, daily debrief, notifications, demo sandboxes |
 | [kanso-ai](https://github.com/LuisFVillalon/kanso-ai) | LLM-backed learning-resource recommendations |
 
 Interactive API reference: `/docs` on any running instance.
@@ -32,7 +32,7 @@ erDiagram
     TASKS ||--o{ TASKS : "parent / subtasks"
 ```
 
-Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker), `drawings` (the doodle canvas) and `notification_preferences`; `notification_states` holds read and dismissed state per notification. Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
+Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker), `drawings` (the doodle canvas) and `notification_preferences`; `notification_states` holds read and dismissed state per notification, and `mood_checkins` holds one mood check-in per day, week or month. Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
 
 ## Project structure
 
@@ -63,6 +63,7 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 | Note time | `POST /note-session/start` · `PUT /note-session/end/{id}` · `GET /note-session/total/{note_id}` · `GET /note-session/totals` · `GET /note-session/totals-range` · `POST /note-session/reap` |
 | Habits | `GET /get-habits` · `POST /create-habit` · `PUT /update-habit/{id}` · `PATCH /archive-habit/{id}` · `PATCH /unarchive-habit/{id}` · `DELETE /del-habit/{id}` · `PATCH /restore-habit/{id}` · `DELETE /purge-habit/{id}` · `PATCH /toggle-habit/{id}` · `PATCH /toggle-habit-date/{id}` · `POST /verify-streaks` · `GET /habit-history/{id}` |
 | Trash | `GET /get-trash` |
+| Mood check-ins | `GET /get-mood-checkins?start_date=&end_date=&kinds=` · `PUT /save-mood-checkin` · `DELETE /del-mood-checkin/{id}` · `GET /get-mood-tags` |
 | Daily debrief | `GET /daily-debrief?local_date=&local_time=` |
 | Calendar activity | `GET /get-calendar-activity?start_date=&end_date=&tz=` |
 | Notifications | `GET /get-notifications?tz=` · `POST /mark-notifications-read` · `POST /mark-all-notifications-read?tz=` · `POST /dismiss-notifications` · `GET /get-notification-preferences` · `PATCH /update-notification-preferences` |
@@ -90,6 +91,18 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 Only open tasks with a `due_date` count, and reminders and final warnings also need a `due_time`; a lead of 30 minutes or less sends only the final warning. Completed, archived and deleted tasks and archived and deleted habits are left out. Each notification has `id`, `type`, `title`, `body`, `fire_at` (UTC, `Z` suffix), the `task_ids` or `habit_ids` it is about, and `read`; the list is newest first. Ids are deterministic, `{type}:{subject}:{occurrence}` (e.g. `overdue:task-12:2026-10-20T16:00` or `due_today:tasks:2026-10-20`), so read and dismissed state, stored per id, holds across reloads and devices; moving a task's due time makes a new occurrence. `POST /mark-notifications-read` and `POST /dismiss-notifications` take `{"ids": [...]}` (up to 200); `POST /mark-all-notifications-read?tz=` marks everything currently listed. Dismissed notifications are left out of the list. Occurrences older than 30 days are no longer listed, and their state rows are deleted, for every user, at startup and whenever anyone marks or dismisses notifications.
 
 `GET /get-notification-preferences` returns `types` (every type, `true` unless switched off), `quiet_hours_start`/`quiet_hours_end` (`"HH:MM"` or `null`) and `default_reminder_minutes`. `PATCH /update-notification-preferences` changes only the fields given: `types` merges, quiet hours are set as a pair (they may run past midnight, e.g. 22:00 to 07:00) and cleared with two `null`s, and a `null` `default_reminder_minutes` restores 120. An alert that fires during quiet hours is delivered when they end, with its `fire_at` moved to then, and is dropped if it would already have lapsed. Tasks take an optional `reminder_minutes` (1 to 10080) on create and update; `null` uses the default.
+
+**Mood check-ins.** A short end-of-day, end-of-week or end-of-month form about the user's mood, for the calendar reports. There is one check-in per user, `period_kind` (`day`, `week` or `month`) and `period_start`, the caller's local date: the day itself, the Monday of a Mon–Sun week, or the 1st of the month. Every check-in has a `mood` from 1 (Rough) to 5 (Great), an optional `note` (up to 280 characters) and `tags`; the other fields depend on the kind:
+
+| Kind | Fields |
+|---|---|
+| `day` | `energy` (1 Drained to 5 Charged) · `stress` (1 Calm to 5 Maxed) |
+| `week` | `workload` (0 too light, 1 about right, 2 too much) · `highlight` (the best part of the week, up to 120 characters) |
+| `month` | `progress` (on what matters, 1 none to 5 a lot) · `word` (the month in one word, up to 24 characters) |
+
+`PUT /save-mood-checkin` creates the period's check-in or replaces it in place (same `id`), so editing and backfilling are the same call; it takes the whole form, so a field left out is cleared. A field from another kind, a week not starting on a Monday, a month not starting on the 1st, or a `period_start` more than a day past the server's UTC date is a 422. `GET /get-mood-checkins` returns the check-ins whose `period_start` falls in a range of up to 366 days, oldest first, optionally only the `kinds` given (comma-separated, e.g. `day,week`). `DELETE /del-mood-checkin/{id}` deletes one for good, with no trash, and returns it so the client's Undo can save it again. Mood tags are a list of their own, separate from task tags: each check-in carries up to 20, trimmed and de-duplicated ignoring case, and `GET /get-mood-tags` returns the default list (`Slept well`, `Exercised`, …) plus the custom tags the user has used, most recent first. Correlations with tasks, note time and habits are left to the frontend, which joins these rows with `/get-calendar-activity`. Mood data stays out of the daily debrief and every AI feature.
+
+The profile's `mood_checkins` settings say which check-ins the dashboard nudges for: `daily` (default on), `weekly` and `monthly` (default off), `remind` (`shutoff`, `shutoff+30` or `off`, default `shutoff`, i.e. at "Call it a day") and `show_in_reports` (default on). `GET /get-profile` returns them with defaults filled in; `POST /save-profile` merges the fields given into the saved ones, a `null` field restores its default and a `null` `mood_checkins` restores them all. The demo sandbox comes with about 60 days of check-ins.
 
 `GET /health` is public and used by Fly.io health checks.
 
