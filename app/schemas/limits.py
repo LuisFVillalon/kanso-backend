@@ -25,3 +25,8 @@ MOOD_WORD_MAX = 24
 MOOD_TAGS_PER_CHECKIN_MAX = 20
 # Linked tasks saved under one parent per request.
 LINKED_TASKS_MAX = 100
+# Canvas: the pasted school address, the access token, and the courses
+# unticked under "Courses to show".
+CANVAS_URL_MAX = 2048
+CANVAS_TOKEN_MAX = 512
+CANVAS_HIDDEN_COURSES_MAX = 500

@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 
 from app.models.calendar_settings_model import CalendarSettings
+from app.models.canvas_connection_model import CanvasConnection
 from app.models.drawing_model import Drawing
 from app.models.habit_model import Habit
 from app.models.mood_checkin_model import MoodCheckin
@@ -17,6 +18,7 @@ from app.models.task_model import Task
 USER_OWNED_MODELS = (
     Note, Task, Habit, Tag, Profile, Drawing, CalendarSettings, NotificationPreferences, NotificationState,
     MoodCheckin,
+    CanvasConnection,
 )
 
 
