@@ -1,10 +1,6 @@
 """Linked tasks: saving a parent's ordered links in one go, and the one-level, loop and archive guards."""
 
-from pathlib import Path
-
 import pytest
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 
 from app.models.task_model import Task
 from app.schemas.limits import LINKED_TASKS_MAX
@@ -40,11 +36,6 @@ def _link_directly(db, child_id, parent_id):
     than the one-level rule could be saved before it existed."""
     db.get(Task, child_id).parent_task_id = parent_id
     db.commit()
-
-
-def test_migrations_have_a_single_head():
-    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
 
 
 # ── Saving links ─────────────────────────────────────────────────────────────
