@@ -5,7 +5,7 @@ The API behind [kanso](https://kanso-web-app.vercel.app), a productivity app for
 | Repository | Role |
 |---|---|
 | [kanso-frontend](https://github.com/LuisFVillalon/kanso-frontend) | Next.js web app (start here for the full architecture) |
-| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, profile, daily debrief, demo sandboxes |
+| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, profile, daily debrief, notifications, demo sandboxes |
 | [kanso-ai](https://github.com/LuisFVillalon/kanso-ai) | LLM-backed learning-resource recommendations |
 
 Interactive API reference: `/docs` on any running instance.
