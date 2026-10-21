@@ -23,3 +23,8 @@ MOOD_NOTE_MAX = 280
 MOOD_HIGHLIGHT_MAX = 120
 MOOD_WORD_MAX = 24
 MOOD_TAGS_PER_CHECKIN_MAX = 20
+# Canvas: the pasted school address, the access token, and the courses
+# unticked under "Courses to show".
+CANVAS_URL_MAX = 2048
+CANVAS_TOKEN_MAX = 512
+CANVAS_HIDDEN_COURSES_MAX = 500

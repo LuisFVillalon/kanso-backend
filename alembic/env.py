@@ -21,6 +21,7 @@ if config.config_file_name is not None:
 from app.database.database import Base
 from app.models import (  # ensure every model is visible to autogenerate
     calendar_settings_model,
+    canvas_connection_model,
     drawing_model,
     habit_log_model,
     habit_model,
