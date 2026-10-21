@@ -1,10 +1,8 @@
-from datetime import UTC, datetime
-
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.crud.base import archived_filter, deleted_filter, get_owned, set_archived, trash_cutoff
-from app.crud.trash_crud import purge_expired, purge_from_trash, restore_from_trash
+from app.crud.base import get_owned, list_owned, set_archived, trash_cutoff
+from app.crud.trash_crud import move_to_trash, purge_from_trash, restore_from_trash
 from app.models.tag_model import Tag as TagModel
 from app.schemas.tag_schema import TagCreate
 
@@ -80,11 +78,7 @@ def _ensure_name_available(db: Session, name: str, user_id: str, exclude_id: int
 
 def get_tags(db: Session, user_id: str, archived: bool = False):
     """Return the user's active tags, or only their archived ones when archived=True. Deleted tags are left out."""
-    return (
-        db.query(TagModel)
-        .filter(TagModel.user_id == user_id, deleted_filter(TagModel, False), archived_filter(TagModel, archived))
-        .all()
-    )
+    return list_owned(db, TagModel, user_id, archived)
 
 
 def create_tag(db: Session, tag: TagCreate, user_id: str):
@@ -99,14 +93,7 @@ def create_tag(db: Session, tag: TagCreate, user_id: str):
 
 def delete_tag(db: Session, tag_id: int, user_id: str):
     """Move a tag to the trash. Its links are kept but hidden. Returns None if not found."""
-    tag = get_owned(db, TagModel, tag_id, user_id)
-    if not tag:
-        return None
-    tag.deleted_at = datetime.now(UTC)
-    purge_expired(db)
-    db.commit()
-    db.refresh(tag)
-    return tag
+    return move_to_trash(db, TagModel, tag_id, user_id)
 
 
 def update_tag(db: Session, tag_id: int, tag: TagCreate, user_id: str):

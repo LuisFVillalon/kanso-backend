@@ -1,10 +1,10 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
-from app.core.http_utils import require_found, require_time_zone
+from app.core.http_utils import require_date_range, require_found, require_time_zone
 from app.crud.activity_crud import get_calendar_activity
 from app.crud.calendar_crud import get_calendar_settings, upsert_calendar_settings
 from app.database.database import get_db
@@ -59,11 +59,5 @@ def read_calendar_activity(
     """Return the user's planned and completed tasks, note sessions and habit
     completions across [start_date, end_date], for the calendar week view and
     weekly/monthly/yearly reports (which ask for archived items too)."""
-    if start_date > end_date:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must not be after end_date.")
-    if (end_date - start_date).days + 1 > ACTIVITY_RANGE_MAX_DAYS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"The range may span at most {ACTIVITY_RANGE_MAX_DAYS} days.",
-        )
+    require_date_range(start_date, end_date, ACTIVITY_RANGE_MAX_DAYS)
     return get_calendar_activity(db, current_user.id, start_date, end_date, require_time_zone(tz), include_archived)

@@ -1,12 +1,11 @@
-from datetime import date as date_type
 from datetime import datetime, timedelta
 from datetime import time as time_type
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
-from app.core.http_utils import require_found
+from app.core.http_utils import parse_iso_date, require_date_range, require_found
 from app.crud.note_crud import (
     archive_note,
     create_note,
@@ -176,15 +175,9 @@ def read_note_time_spent_for_range(
     db: Session = Depends(get_db),
 ):
     """Return total time (in seconds) spent per note, for closed sessions ended within [start_date, end_date]."""
-    try:
-        start = date_type.fromisoformat(start_date)
-        end = date_type.fromisoformat(end_date)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date format. Use YYYY-MM-DD."
-        ) from None
-    if start > end:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must not be after end_date.")
+    start = parse_iso_date(start_date)
+    end = parse_iso_date(end_date)
+    require_date_range(start, end)
 
     if utc_offset_minutes is not None:
         # ended_at is a naive UTC wall-clock timestamp. Convert the caller's
