@@ -152,13 +152,18 @@ def update_password(
             ),
         )
 
-    _password_check_limiter.ensure_room(current_user.id)
-    if not current_user.email or not verify_password(current_user.email, body.current_password):
-        _password_check_limiter.record(current_user.id)
+    attempt = _password_check_limiter.check(current_user.id)
+    try:
+        correct = bool(current_user.email) and verify_password(current_user.email, body.current_password)
+    except HTTPException:
+        _password_check_limiter.release(current_user.id, attempt)
+        raise
+    if not correct:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Current password is incorrect.",
         )
+    _password_check_limiter.release(current_user.id, attempt)
 
     _check_password(body.new_password, current_user.email)
 

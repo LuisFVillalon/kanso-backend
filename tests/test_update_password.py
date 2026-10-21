@@ -1,5 +1,8 @@
 """POST /update-password: the current-password check, with Supabase mocked."""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import httpx
 import pytest
 from fastapi import HTTPException
@@ -87,6 +90,41 @@ def test_wrong_passwords_are_rate_limited(as_user, supabase):
     assert resp.status_code == 429
     assert len(supabase["verify"]) == 5
     assert supabase["update"] == []
+
+
+def test_concurrent_wrong_passwords_cannot_outrun_the_limit(as_user, supabase, monkeypatch):
+    """Checks still waiting on Supabase already count, so parallel guesses hit the limit too."""
+    arrived = threading.Semaphore(0)
+    proceed = threading.Event()
+
+    def slow_verify(email, password):
+        supabase["verify"].append((email, password))
+        arrived.release()
+        proceed.wait(timeout=10)
+        return False
+
+    monkeypatch.setattr(user_router, "verify_password", slow_verify)
+    client = as_user()
+    wrong = {"current_password": "not it", "new_password": NEW}
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        in_flight = [pool.submit(client.post, "/update-password", json=wrong) for _ in range(5)]
+        for _ in range(5):
+            assert arrived.acquire(timeout=10)
+        # Five guesses are with Supabase; a sixth is refused without asking.
+        assert client.post("/update-password", json=wrong).status_code == 429
+        proceed.set()
+        assert [f.result().status_code for f in in_flight] == [403] * 5
+    assert len(supabase["verify"]) == 5
+
+
+def test_supabase_errors_do_not_count_towards_the_limit(as_user, supabase, monkeypatch):
+    def down(email, password):
+        raise HTTPException(status_code=502, detail="Couldn't check the password.")
+
+    monkeypatch.setattr(user_router, "verify_password", down)
+    client = as_user()
+    for _ in range(6):
+        assert client.post("/update-password", json={"current_password": CURRENT, "new_password": NEW}).status_code == 502
 
 
 def test_successful_checks_do_not_count_towards_the_limit(as_user, supabase):
