@@ -1,7 +1,7 @@
 """add canvas_connections: one encrypted Canvas LMS token per user
 
 Revision ID: 89a87cdc6728
-Revises: 766e91c81956
+Revises: a4669d8b3d50
 Create Date: 2026-10-20 00:02:00.000000
 
 Each user can connect one Canvas account with a personal access token and
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 
 
 revision: str = '89a87cdc6728'
-down_revision: Union[str, Sequence[str], None] = '766e91c81956'
+down_revision: Union[str, Sequence[str], None] = 'a4669d8b3d50'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
