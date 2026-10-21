@@ -14,6 +14,7 @@ the connection deletes the row outright, with no trash retention.
 import re
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import crypto
@@ -91,12 +92,29 @@ def connect(
     if expires_at is not None and expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
 
+    encrypted = crypto.encrypt(token, user_id)
+    try:
+        return _store(db, user_id, base_url, token, encrypted, account, expires_at, allow_account_change)
+    except IntegrityError:
+        db.rollback()
+        return _store(db, user_id, base_url, token, encrypted, account, expires_at, allow_account_change)
+
+
+def _store(
+    db: Session,
+    user_id: str,
+    base_url: str,
+    token: str,
+    encrypted: crypto.Encrypted,
+    account: dict,
+    expires_at: datetime | None,
+    allow_account_change: bool,
+) -> CanvasConnection:
     row = get_connection(db, user_id)
     account_changed = row is not None and (row.base_url != base_url or row.canvas_user_id != account["id"])
     if account_changed and not allow_account_change:
         raise CanvasAccountChanged("The token belongs to a different Canvas account.")
 
-    encrypted = crypto.encrypt(token, user_id)
     if row is None:
         row = CanvasConnection(user_id=user_id, hidden_course_ids=[])
         db.add(row)

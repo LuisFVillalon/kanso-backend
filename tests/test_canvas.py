@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import insert
 
 from app.core import canvas_client, crypto
 from app.core.auth import UserInfo, get_current_user
@@ -25,6 +26,7 @@ from app.core.canvas_client import (
     normalize_base_url,
 )
 from app.core.rate_limit import RateLimiter
+from app.crud import canvas_crud
 from app.crud.account_crud import delete_user_rows
 from app.crud.canvas_crud import get_connection
 from app.database.database import get_db
@@ -531,6 +533,43 @@ def test_replacing_with_another_account_needs_confirmation_and_resets_settings(c
     assert confirmed.status_code == 200
     assert confirmed.json()["canvas_user_name"] == "Grace Hopper"
     assert confirmed.json()["hidden_course_ids"] == []
+
+
+def test_a_first_connect_racing_another_ends_connected(client, db, canvas, monkeypatch):
+    """Two first-time connects (a double-clicked Save) both find no row; the one that commits second updates it."""
+    real_get_connection = canvas_crud.get_connection
+    lookups = []
+
+    def get_connection_while_another_connect_commits(session, user_id):
+        lookups.append(user_id)
+        row = real_get_connection(session, user_id)
+        if len(lookups) == 1:
+            encrypted = crypto.encrypt(TOKEN, user_id)
+            session.execute(
+                insert(CanvasConnection).values(
+                    user_id=user_id,
+                    base_url=BASE_URL,
+                    token_ciphertext=encrypted.ciphertext,
+                    token_nonce=encrypted.nonce,
+                    key_version=encrypted.key_version,
+                    token_last4=TOKEN[-4:],
+                    canvas_user_id=42,
+                    canvas_user_name="Ada Lovelace",
+                    status="active",
+                    hidden_course_ids=[],
+                )
+            )
+            session.commit()
+        return row
+
+    monkeypatch.setattr(canvas_crud, "get_connection", get_connection_while_another_connect_commits)
+    response = _connect(client, token=NEW_TOKEN)
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is True
+    assert response.json()["token_last4"] == "R4nd"
+    assert len(lookups) == 2
+    assert _stored_token(real_get_connection(db, USER_ID)) == NEW_TOKEN
 
 
 def test_moving_to_another_school_needs_confirmation(client, canvas):
