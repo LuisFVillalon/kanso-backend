@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import gzip
 import logging
 import os
 import time
@@ -285,6 +286,30 @@ def test_an_oversized_answer_is_abandoned_without_reading_it_all(canvas, monkeyp
     with pytest.raises(CanvasNotCanvas):
         CanvasClient(BASE_URL, TOKEN).get_self()
     assert len(sent) < 100
+
+
+def test_a_compressed_answer_that_would_inflate_past_the_cap_is_refused(canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "MAX_RESPONSE_BYTES", 1000)
+    bomb = gzip.compress(b" " * 100_000)
+    assert len(bomb) < 1000
+    canvas.respond = lambda request: httpx.Response(200, content=bomb, headers={"Content-Encoding": "gzip"})
+    with pytest.raises(CanvasNotCanvas):
+        CanvasClient(BASE_URL, TOKEN).get_self()
+    [request] = canvas.requests
+    assert request.headers["Accept-Encoding"] == "identity"
+
+
+def test_a_timed_out_address_falls_back_to_the_next_checked_one(canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "_resolve", lambda host: ["151.101.65.1", PUBLIC_IP])
+
+    def respond(request):
+        if request.url.host == "151.101.65.1":
+            raise httpx.ConnectTimeout("timed out")
+        return httpx.Response(200, json={"id": 42, "name": "Ada Lovelace"})
+
+    canvas.respond = respond
+    assert CanvasClient(BASE_URL, TOKEN).get_self()["id"] == 42
+    assert [r.url.host for r in canvas.requests] == ["151.101.65.1", PUBLIC_IP]
 
 
 def test_an_answer_trickling_past_the_deadline_is_abandoned(canvas, monkeypatch):

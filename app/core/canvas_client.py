@@ -152,7 +152,12 @@ class CanvasClient:
         if self._addresses is None:
             self._addresses = _public_addresses(self._host)
         url = httpx.URL(f"{self.base_url}/api/v1{path}", params=params)
-        headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/json", "Host": self._host}
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "Host": self._host,
+        }
         try:
             return asyncio.run(self._get(url, headers))
         except (TimeoutError, httpx.TimeoutException):
@@ -167,7 +172,7 @@ class CanvasClient:
                 for i, address in enumerate(self._addresses):
                     try:
                         return await self._fetch(client, url.copy_with(host=address), headers)
-                    except httpx.ConnectError:
+                    except (httpx.ConnectError, httpx.ConnectTimeout):
                         if i == len(self._addresses) - 1:
                             raise
 
@@ -175,8 +180,10 @@ class CanvasClient:
         # The URL names the checked address; sni_hostname keeps TLS (SNI and
         # certificate verification) on the school's host name.
         async with client.stream("GET", url, headers=headers, extensions={"sni_hostname": self._host}) as response:
+            if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                raise CanvasNotCanvas("The host answered with an encoding that was not asked for.")
             body = bytearray()
-            async for chunk in response.aiter_bytes():
+            async for chunk in response.aiter_raw():
                 body += chunk
                 if len(body) > MAX_RESPONSE_BYTES:
                     raise CanvasNotCanvas("The host's answer was too large.")
