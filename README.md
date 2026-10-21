@@ -19,7 +19,7 @@ Interactive API reference: `/docs` on any running instance.
 - **Timezone-correct logic.** The server runs in UTC. Habit streaks, "due today" and the daily debrief take the caller's `local_date`/`local_time` rather than the server clock, and note time totals take the caller's UTC offset.
 - **A rule-based daily debrief.** `GET /daily-debrief` combines overdue and due-today tasks, today's completions, habit status and workload capacity (committed vs. available minutes, respecting rest days) into a prioritized "focus next" list. No LLM is involved.
 - **Third-party tokens encrypted at rest.** A user's Canvas access token is stored only as AES-256-GCM ciphertext, with the key in a Fly secret rather than the database, and is never sent back to the browser.
-- **Input bounds and rate limits.** Request schemas cap field lengths and list sizes; demo seeding is rate-limited per user.
+- **Input bounds and rate limits.** Request schemas cap field lengths and list sizes; demo seeding and Canvas connect/test are rate-limited per user.
 
 ## Data model
 

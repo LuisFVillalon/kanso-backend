@@ -11,8 +11,9 @@ Demo sandboxes are refused with 403: they'd be handing a real Canvas token
 to a throwaway account. Canvas-specific failures return a stable code as
 the detail (see core/canvas_client.py), so the frontend can show the right
 message: canvas_url_invalid, canvas_not_canvas, canvas_token_invalid,
-canvas_forbidden (422), canvas_account_changed (409), canvas_unavailable
-(502) and canvas_not_configured (503, the server has no CANVAS_TOKEN_KEY).
+canvas_forbidden (422), canvas_account_changed (409), canvas_not_connected (404),
+canvas_unavailable (502) and canvas_not_configured (503, the server has no
+CANVAS_TOKEN_KEY).
 """
 
 import logging
