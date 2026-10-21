@@ -45,9 +45,11 @@ def supabase(monkeypatch):
 @pytest.fixture
 def as_user():
     """Signs requests in as the given user; needs no database."""
+
     def sign_in(user=None):
         app.dependency_overrides[get_current_user] = lambda: user or _user()
         return TestClient(app)
+
     yield sign_in
     app.dependency_overrides.clear()
 
@@ -124,7 +126,9 @@ def test_supabase_errors_do_not_count_towards_the_limit(as_user, supabase, monke
     monkeypatch.setattr(user_router, "verify_password", down)
     client = as_user()
     for _ in range(6):
-        assert client.post("/update-password", json={"current_password": CURRENT, "new_password": NEW}).status_code == 502
+        assert (
+            client.post("/update-password", json={"current_password": CURRENT, "new_password": NEW}).status_code == 502
+        )
 
 
 def test_successful_checks_do_not_count_towards_the_limit(as_user, supabase):
@@ -163,6 +167,7 @@ def test_policy_is_checked_only_after_the_current_password(as_user, supabase):
 
 
 # ── verify_password against a mocked Supabase Auth ──────────────────────────
+
 
 @pytest.fixture
 def auth_server(monkeypatch):
