@@ -40,7 +40,7 @@ def get_connection(db: Session, user_id: str) -> CanvasConnection | None:
     return db.query(CanvasConnection).filter(CanvasConnection.user_id == user_id).first()
 
 
-def _expired(row: CanvasConnection, now: datetime) -> bool:
+def expired(row: CanvasConnection, now: datetime) -> bool:
     return row.token_expires_at is not None and row.token_expires_at <= now
 
 
@@ -49,7 +49,7 @@ def connection_out(row: CanvasConnection | None, now: datetime) -> CanvasConnect
         return CanvasConnectionOut(connected=False)
     return CanvasConnectionOut(
         connected=True,
-        status="invalid" if _expired(row, now) else row.status,
+        status="invalid" if expired(row, now) else row.status,
         base_url=row.base_url,
         token_last4=row.token_last4,
         canvas_user_id=row.canvas_user_id,
@@ -63,7 +63,7 @@ def connection_out(row: CanvasConnection | None, now: datetime) -> CanvasConnect
     )
 
 
-def _decrypt_token(row: CanvasConnection) -> str:
+def decrypt_token(row: CanvasConnection) -> str:
     return crypto.decrypt(
         crypto.Encrypted(ciphertext=row.token_ciphertext, nonce=row.token_nonce, key_version=row.key_version),
         row.user_id,
@@ -147,10 +147,10 @@ def check_connection(db: Session, user_id: str, now: datetime) -> CanvasConnecti
     if row is None:
         return None
     try:
-        if _expired(row, now):
+        if expired(row, now):
             raise CanvasTokenInvalid("The token has expired.")
         try:
-            token = _decrypt_token(row)
+            token = decrypt_token(row)
         except crypto.DecryptionError:
             raise CanvasTokenInvalid("The stored token can't be decrypted.") from None
         account = CanvasClient(row.base_url, token).get_self()
