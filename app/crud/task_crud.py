@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.crud.base import archived_filter, deleted_filter, get_owned
+from app.crud.base import archived_filter, deleted_filter, get_owned, list_owned
 from app.crud.tag_crud import set_item_tags
 from app.crud.trash_crud import get_trashed, purge_expired
 from app.models.task_model import Task as TaskModel
@@ -14,14 +14,10 @@ from app.schemas.task_schema import LinkedTaskRef, TaskCreate
 
 def get_tasks(db: Session, user_id: str, archived: bool = False):
     """Return the user's active tasks, or only their archived ones when archived=True. Deleted tasks are left out."""
-    return (
-        db.query(TaskModel)
-        .filter(TaskModel.user_id == user_id, deleted_filter(TaskModel, False), archived_filter(TaskModel, archived))
-        .all()
-    )
+    return list_owned(db, TaskModel, user_id, archived)
 
 
-def _priority_taken(db: Session, user_id: str, priority: int, exclude_task_id: int = None) -> bool:
+def _priority_taken(db: Session, user_id: str, priority: int, exclude_task_id: int | None = None) -> bool:
     """True if another active task for this user already has the same priority.
 
     Archived and deleted tasks keep their priority but don't hold it: they're
@@ -38,7 +34,7 @@ def _priority_taken(db: Session, user_id: str, priority: int, exclude_task_id: i
     return q.first() is not None
 
 
-def _validate_priority_unique(db: Session, user_id: str, priority: int, exclude_task_id: int = None) -> None:
+def _validate_priority_unique(db: Session, user_id: str, priority: int, exclude_task_id: int | None = None) -> None:
     """Raise 400 if another active task for this user already has the same priority."""
     if _priority_taken(db, user_id, priority, exclude_task_id):
         raise HTTPException(

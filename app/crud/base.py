@@ -31,6 +31,15 @@ def get_owned[ModelT](
     return q.first()
 
 
+def list_owned[ModelT](db: Session, model: type[ModelT], user_id: str, archived: bool = False) -> list[ModelT]:
+    """The user's active rows of a model, or only their archived ones when archived=True. Deleted rows are left out."""
+    return (
+        db.query(model)
+        .filter(model.user_id == user_id, deleted_filter(model, False), archived_filter(model, archived))
+        .all()
+    )
+
+
 def deleted_filter(model, deleted: bool):
     """Filter clause selecting a model's deleted rows, or its live ones (deleted_at NULL)."""
     return model.deleted_at.isnot(None) if deleted else model.deleted_at.is_(None)

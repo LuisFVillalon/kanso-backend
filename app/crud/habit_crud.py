@@ -1,11 +1,11 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.crud.base import archived_filter, deleted_filter, get_owned, set_archived
+from app.crud.base import archived_filter, deleted_filter, get_owned, list_owned, set_archived
 from app.crud.tag_crud import set_item_tags
-from app.crud.trash_crud import purge_expired, purge_from_trash, restore_from_trash
+from app.crud.trash_crud import move_to_trash, purge_from_trash, restore_from_trash
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
 from app.schemas.habit_schema import HabitCreate
@@ -109,11 +109,7 @@ def _is_logged_today(db: Session, habit_id: int, today: date) -> bool:
 
 def get_habits(db: Session, user_id: str, local_date: str | None = None, archived: bool = False):
     """Return the user's active habits, or only their archived ones when archived=True. Deleted habits are left out."""
-    habits = (
-        db.query(Habit)
-        .filter(Habit.user_id == user_id, deleted_filter(Habit, False), archived_filter(Habit, archived))
-        .all()
-    )
+    habits = list_owned(db, Habit, user_id, archived)
     if not habits:
         return habits
 
@@ -156,14 +152,8 @@ def update_habit(db: Session, habit_id: int, habit: HabitCreate, user_id: str, l
 
 def delete_habit(db: Session, habit_id: int, user_id: str):
     """Move a habit to the trash, keeping its logs. Returns None if not found."""
-    db_habit = get_owned(db, Habit, habit_id, user_id)
-    if not db_habit:
-        return None
-    db_habit.deleted_at = datetime.now(UTC)
-    purge_expired(db)
-    db.commit()
-    db.refresh(db_habit)
-    return _stamp(db_habit, False)
+    db_habit = move_to_trash(db, Habit, habit_id, user_id)
+    return _stamp(db_habit, False) if db_habit else None
 
 
 def _stamped(db: Session, habit: Habit | None, local_date: str | None) -> Habit | None:

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
-from app.core.http_utils import require_found
+from app.core.http_utils import parse_iso_date, require_found
 from app.crud.habit_crud import (
     archive_habit,
     create_habit,
@@ -12,6 +12,7 @@ from app.crud.habit_crud import (
     get_habit_history,
     get_habits,
     purge_habit,
+    resolve_today,
     restore_habit,
     toggle_habit_log,
     toggle_habit_log_date,
@@ -121,21 +122,10 @@ def toggle_habit_completion_date(
     db: Session = Depends(get_db),
 ):
     """Toggle completion for a specific past date (or today). Recalculates streaks from scratch."""
-    try:
-        target = date_type.fromisoformat(payload.date)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date format. Use YYYY-MM-DD."
-        ) from None
+    target = parse_iso_date(payload.date)
     # Bound "future" by the caller's local date when supplied — the server's
     # own date.today() may already be tomorrow relative to the user.
-    local_today = date_type.today()
-    if payload.local_date:
-        try:
-            local_today = date_type.fromisoformat(payload.local_date)
-        except ValueError:
-            pass
-    if target > max(local_today, date_type.today()):
+    if target > max(resolve_today(payload.local_date), date_type.today()):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot log future dates.")
     return require_found(
         toggle_habit_log_date(db, habit_id, current_user.id, target, local_date=payload.local_date),

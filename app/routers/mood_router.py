@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
-from app.core.http_utils import require_found
+from app.core.http_utils import require_date_range, require_found
 from app.crud.mood_crud import delete_checkin, get_checkins, get_mood_tags, save_checkin
 from app.database.database import get_db
 from app.schemas.mood_schema import MOOD_PERIOD_KINDS, MoodCheckin, MoodCheckinSave, MoodTags
@@ -39,13 +39,7 @@ def read_mood_checkins(
     db: Session = Depends(get_db),
 ):
     """Return the user's check-ins whose period_start falls in [start_date, end_date], oldest first."""
-    if start_date > end_date:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must not be after end_date.")
-    if (end_date - start_date).days + 1 > MOOD_RANGE_MAX_DAYS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"The range may span at most {MOOD_RANGE_MAX_DAYS} days.",
-        )
+    require_date_range(start_date, end_date, MOOD_RANGE_MAX_DAYS)
     return get_checkins(db, current_user.id, start_date, end_date, _parse_kinds(kinds))
 
 

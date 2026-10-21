@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.crud.habit_crud import get_habits
+from app.crud.habit_crud import get_habits, resolve_today
 from app.crud.note_session_crud import get_time_by_note_for_date, get_time_by_note_for_datetime_range
 from app.crud.profile_crud import get_profile
 from app.models.note_model import Note as NoteModel
@@ -42,16 +42,6 @@ def _priority_sort_key(task: TaskModel):
 def _due_date_only(task: TaskModel) -> date | None:
     """Task.due_date is a DateTime column; normalize to a plain date for comparisons."""
     return task.due_date.date() if task.due_date else None
-
-
-def _parse_local_date(value: str | None) -> date | None:
-    """Parse a caller-supplied "YYYY-MM-DD" local date, ignoring anything malformed."""
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
 
 
 def _parse_local_time(value: str | None) -> time | None:
@@ -193,7 +183,7 @@ def build_daily_debrief(
     overdue. Similarly, a task due today isn't actually overdue until its own
     due_time — if any — has passed in the caller's local time.
     """
-    today = _parse_local_date(local_date) or date.today()
+    today = resolve_today(local_date)
     now_time = _parse_local_time(local_time)
 
     open_tasks = (

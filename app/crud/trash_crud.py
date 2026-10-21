@@ -14,6 +14,8 @@ removal happens isn't observable; deleting the account removes it at once
 regardless.
 """
 
+from datetime import UTC, datetime
+
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
@@ -75,6 +77,18 @@ def get_trashed(db: Session, model, record_id: int, user_id: str):
     purge_expired(db)
     db.commit()
     return get_owned(db, model, record_id, user_id, trashed=True)
+
+
+def move_to_trash(db: Session, model, record_id: int, user_id: str):
+    """Move a note, tag or habit to the trash, its links kept for a restore. Returns None if not found."""
+    row = get_owned(db, model, record_id, user_id)
+    if not row:
+        return None
+    row.deleted_at = datetime.now(UTC)
+    purge_expired(db)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def restore_from_trash(db: Session, model, record_id: int, user_id: str):
