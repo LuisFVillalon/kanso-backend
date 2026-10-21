@@ -355,6 +355,22 @@ def test_mood_missed_needs_daily_check_ins_on(db):
     assert _ids(db, _utc(DAY, 8, 0)) == []
 
 
+def test_mood_remind_off_silences_both_mood_alerts(db):
+    _profile(db, mood_checkins={"remind": "off"})
+    _mood(db, DAY - timedelta(days=3))
+    assert _ids(db, _utc(DAY, 8, 0)) == []
+    assert _ids(db, _utc(DAY, 21, 0)) == []
+
+
+@pytest.mark.parametrize("remind", ["shutoff", "shutoff+30"])
+def test_mood_remind_timing_does_not_change_the_mood_reminder_lead(db, remind):
+    _profile(db, shutoff_time="20:00", mood_checkins={"remind": remind})
+    assert _ids(db, _utc(DAY, 18, 59)) == []
+    assert _by_id(db, _utc(DAY, 19, 0))["mood_reminder:mood:2026-10-20"].fire_at == _utc(DAY, 19, 0)
+    update_preferences(db, USER_ID, {"mood_reminder_minutes": 30})
+    assert _by_id(db, _utc(DAY, 19, 30))["mood_reminder:mood:2026-10-20"].fire_at == _utc(DAY, 19, 30)
+
+
 # ── Quiet hours ──────────────────────────────────────────────────────────────
 
 def test_quiet_hours_hold_alerts_until_they_end(db):

@@ -19,7 +19,8 @@ fired by now in the caller's time zone. The alerts are:
   check-in, counted from the user's first one. Not on rest days.
 
 Both mood alerts need daily check-ins on in the profile's mood settings, and
-only say that a check-in is due or missing, never what one holds.
+are silenced by its remind "off" as well; they only say that a check-in is
+due or missing, never what one holds.
 
 Only tasks with a due_date count; reminders and final warnings need a
 due_time too. Completed, archived and deleted tasks and archived and deleted
@@ -359,7 +360,8 @@ def _mood_alerts(
     db: Session, user_id: str, today: date, day_start: time, profile: Profile | None, lead: int,
     enabled: dict, tz: ZoneInfo,
 ) -> list[_Alert]:
-    if not resolve_mood_settings(profile.mood_checkins if profile else None).daily:
+    settings = resolve_mood_settings(profile.mood_checkins if profile else None)
+    if not settings.daily or settings.remind == "off":
         return []
     shutoff = _parse_hhmm(profile.shutoff_time if profile else None, DEFAULT_SHUTOFF)
     rest_days = (profile.rest_days if profile else None) or []
