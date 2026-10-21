@@ -558,6 +558,25 @@ def test_kansos_own_limit_serves_the_cache_or_429s(connected, canvas, monkeypatc
     assert len(canvas.requests) == 1
 
 
+def test_a_fetch_waiting_too_long_for_a_slot_counts_as_unavailable(connected, canvas, monkeypatch):
+    monkeypatch.setattr(canvas_data_crud, "IN_FLIGHT_WAIT", timedelta(0))
+    connected.get("/canvas/courses")
+    monkeypatch.setitem(canvas_data_crud.TTL, "courses", timedelta(0))
+    slots = canvas_data_crud._in_flight[USER_ID]
+    for _ in range(canvas_data_crud.MAX_IN_FLIGHT):
+        slots.acquire()
+    try:
+        canvas.requests.clear()
+        assert connected.get("/canvas/courses").json()["stale"] is True
+        response = connected.get("/canvas/courses/11/assignments")
+        assert (response.status_code, response.json()["detail"]) == (502, "canvas_unavailable")
+        assert canvas.requests == []
+    finally:
+        for _ in range(canvas_data_crud.MAX_IN_FLIGHT):
+            slots.release()
+    assert connected.get("/canvas/courses/11/assignments").status_code == 200
+
+
 def test_replacing_or_removing_the_token_drops_the_cache(connected, canvas):
     connected.get("/canvas/courses")
     connected.put("/canvas/connection", json={"base_url": BASE_URL, "token": NEW_TOKEN})
@@ -624,12 +643,28 @@ def test_a_token_replaced_during_a_fetch_is_not_marked_invalid(connected, db, ca
 
     canvas.respond = replace_then_reject
     response = connected.get("/canvas/courses")
-    assert (response.status_code, response.json()["detail"]) == (409, "canvas_token_invalid")
+    assert response.status_code == 200
+    assert [c["id"] for c in response.json()["courses"]] == [11, 12, 14]
+    assert [r.headers["Authorization"] for r in canvas.requests] == [f"Bearer {TOKEN}", f"Bearer {NEW_TOKEN}"]
     assert get_connection(db, USER_ID).status == "active"
 
     canvas.requests.clear()
     assert connected.get("/canvas/courses").status_code == 200
-    assert canvas.requests[0].headers["Authorization"] == f"Bearer {NEW_TOKEN}"
+    assert canvas.requests == []
+
+
+def test_a_token_removed_during_a_rejected_fetch_is_not_connected(connected, db, canvas):
+    def remove_then_reject(request):
+        canvas.respond = None
+        delete_connection(db, USER_ID)
+        canvas_cache.evict_user(USER_ID)
+        del canvas.valid[TOKEN]
+        return None
+
+    canvas.respond = remove_then_reject
+    response = connected.get("/canvas/courses")
+    assert (response.status_code, response.json()["detail"]) == (404, "canvas_not_connected")
+    assert len(canvas.requests) == 1
 
 
 def test_a_token_replaced_during_a_fetch_does_not_cache_the_old_tokens_data(connected, db, canvas):
@@ -661,6 +696,7 @@ def test_removing_canvas_during_a_fetch_leaves_it_removed(connected, db, canvas)
     canvas.respond = remove
     assert connected.get("/canvas/courses").status_code == 200
     assert get_connection(db, USER_ID) is None
+    assert canvas_cache.get((USER_ID, BASE_URL, 42, "courses")) is None
 
 
 def test_reconnecting_brings_the_panel_back(connected, canvas):

@@ -22,6 +22,8 @@ user's decrypted token:
 
 Calls that reach Canvas are limited per user (_fetch_limiter), and at most
 MAX_IN_FLIGHT run at once per user: Canvas charges parallel requests extra.
+A fetch that can't get a slot within IN_FLIGHT_WAIT counts as Canvas
+being unavailable.
 The cache holds every course; hidden_course_ids is applied on the way out.
 """
 
@@ -73,6 +75,8 @@ TTL = {
 }
 MIN_REFRESH_AGE = timedelta(seconds=30)
 MAX_IN_FLIGHT = 2
+# How long a fetch waits for one of the user's MAX_IN_FLIGHT slots before serving the cache.
+IN_FLIGHT_WAIT = timedelta(seconds=25)
 UPCOMING_DAYS = 7
 RECENTLY_GRADED_DAYS = 7
 RECENTLY_GRADED_MAX = 10
@@ -116,11 +120,14 @@ def read(
     now: datetime,
     refresh: bool = False,
     course_id: int | None = None,
+    retry: bool = True,
 ) -> Read:
     """Serve kind/key for user_id from the cache, or fetch it from Canvas. See the module docstring.
 
     With course_id, a course unticked under "Courses to show" raises
-    CanvasCourseHidden without calling Canvas.
+    CanvasCourseHidden without calling Canvas. A token rejected after it was
+    replaced or removed is read again once (with retry) against the current
+    connection.
     """
     row = get_connection(db, user_id)
     if row is None:
@@ -152,15 +159,23 @@ def read(
         token = None
     db.commit()
 
+    in_flight = _in_flight[user_id]
     try:
         if token is None:
             raise CanvasTokenInvalid("The stored token can't be decrypted.")
-        with _in_flight[user_id]:
+        if not in_flight.acquire(timeout=IN_FLIGHT_WAIT.total_seconds()):
+            raise CanvasUnavailable("Too many Canvas requests are already running for this user.")
+        try:
             data = fetch(CanvasClient(base_url, token))
+        finally:
+            in_flight.release()
     except CanvasTokenInvalid:
         if _record(db, user_id, nonce, {"status": "invalid", "last_error_at": now}):
             canvas_cache.evict_user(user_id)
-        raise
+            raise
+        if not retry:
+            raise
+        return read(db, user_id, kind, key, fetch, now, refresh, course_id, retry=False)
     except CanvasUnavailable as exc:
         if cached is None:
             raise
