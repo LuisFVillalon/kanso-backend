@@ -27,17 +27,17 @@ Errors map to typed exceptions whose `code` the API returns as its detail:
   canvas_unavailable    — Canvas is down, unreachable, slow or rate-limiting
 """
 
+import asyncio
 import ipaddress
 import json
 import re
 import socket
-import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
 import httpx
 
-# Per connect/read; DEADLINE bounds the whole request, body included.
+# Per connect/read; DEADLINE bounds the whole request, from connect to the last byte.
 TIMEOUT = httpx.Timeout(10.0)
 DEADLINE = 20.0
 MAX_RESPONSE_BYTES = 5_000_000
@@ -153,33 +153,33 @@ class CanvasClient:
             self._addresses = _public_addresses(self._host)
         url = httpx.URL(f"{self.base_url}/api/v1{path}", params=params)
         headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/json", "Host": self._host}
-        deadline = time.monotonic() + DEADLINE
         try:
-            with httpx.Client(timeout=TIMEOUT, follow_redirects=False, transport=transport) as client:
-                for i, address in enumerate(self._addresses):
-                    if time.monotonic() > deadline:
-                        raise CanvasUnavailable("Canvas took too long to answer.")
-                    try:
-                        return self._fetch(client, url.copy_with(host=address), headers, deadline)
-                    except httpx.ConnectError:
-                        if i == len(self._addresses) - 1:
-                            raise
-        except httpx.TimeoutException:
+            return asyncio.run(self._get(url, headers))
+        except (TimeoutError, httpx.TimeoutException):
             raise CanvasUnavailable("Canvas took too long to answer.") from None
         except httpx.HTTPError:
             raise CanvasUnavailable("Canvas couldn't be reached.") from None
 
-    def _fetch(self, client: httpx.Client, url: httpx.URL, headers: dict, deadline: float):
+    async def _get(self, url: httpx.URL, headers: dict):
+        # DEADLINE covers the whole exchange: connect, TLS, headers and body.
+        async with asyncio.timeout(DEADLINE):
+            async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False, transport=transport) as client:
+                for i, address in enumerate(self._addresses):
+                    try:
+                        return await self._fetch(client, url.copy_with(host=address), headers)
+                    except httpx.ConnectError:
+                        if i == len(self._addresses) - 1:
+                            raise
+
+    async def _fetch(self, client: httpx.AsyncClient, url: httpx.URL, headers: dict):
         # The URL names the checked address; sni_hostname keeps TLS (SNI and
         # certificate verification) on the school's host name.
-        with client.stream("GET", url, headers=headers, extensions={"sni_hostname": self._host}) as response:
+        async with client.stream("GET", url, headers=headers, extensions={"sni_hostname": self._host}) as response:
             body = bytearray()
-            for chunk in response.iter_bytes():
+            async for chunk in response.aiter_bytes():
                 body += chunk
                 if len(body) > MAX_RESPONSE_BYTES:
                     raise CanvasNotCanvas("The host's answer was too large.")
-                if time.monotonic() > deadline:
-                    raise CanvasUnavailable("Canvas took too long to answer.")
             return _decode(response.status_code, bytes(body))
 
     def get_self(self) -> dict:

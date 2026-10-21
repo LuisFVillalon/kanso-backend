@@ -1,5 +1,6 @@
 """Canvas connection: token encryption, the Canvas client, and the connection endpoints, with Canvas mocked."""
 
+import asyncio
 import base64
 import logging
 import os
@@ -275,7 +276,7 @@ def test_an_oversized_answer_is_abandoned_without_reading_it_all(canvas, monkeyp
     monkeypatch.setattr(canvas_client, "MAX_RESPONSE_BYTES", 1000)
     sent = []
 
-    def body():
+    async def body():
         for _ in range(100):
             sent.append(1)
             yield b"x" * 100
@@ -289,14 +290,29 @@ def test_an_oversized_answer_is_abandoned_without_reading_it_all(canvas, monkeyp
 def test_an_answer_trickling_past_the_deadline_is_abandoned(canvas, monkeypatch):
     monkeypatch.setattr(canvas_client, "DEADLINE", 0.05)
 
-    def body():
+    async def body():
         for _ in range(50):
-            time.sleep(0.01)
+            await asyncio.sleep(0.01)
             yield b" "
 
     canvas.respond = lambda request: httpx.Response(200, content=body())
     with pytest.raises(CanvasUnavailable):
         CanvasClient(BASE_URL, TOKEN).get_self()
+
+
+def test_a_host_stalling_before_its_headers_is_abandoned_at_the_deadline(client, canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "DEADLINE", 0.05)
+
+    async def stall(request):
+        await asyncio.sleep(30)
+        return httpx.Response(200, json={"id": 42, "name": "Ada Lovelace"})
+
+    canvas.respond = stall
+    started = time.monotonic()
+    response = _connect(client)
+    assert response.status_code == 502
+    assert response.json()["detail"] == "canvas_unavailable"
+    assert time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize(
