@@ -14,7 +14,7 @@ from app.core.auth import UserInfo, get_current_user
 from app.core.canvas_client import CanvasClient, CanvasForbidden, CanvasNotCanvas, CanvasRateLimited
 from app.core.rate_limit import RateLimiter
 from app.crud import canvas_data_crud
-from app.crud.canvas_crud import get_connection
+from app.crud.canvas_crud import delete_connection, get_connection
 from app.crud.canvas_data_crud import canvas_url, plain_text
 from app.database.database import get_db
 from app.main import app
@@ -325,21 +325,57 @@ def test_overview_lists_the_next_week_and_missing_work(connected, canvas):
     assert body["missing"][1]["kind"] == "quiz"
 
     planner = next(r for r in canvas.requests if r.url.path == "/api/v1/planner/items")
-    start = datetime.fromisoformat(planner.url.params["start_date"])
-    end = datetime.fromisoformat(planner.url.params["end_date"])
+    start = datetime.fromisoformat(body["start"])
     assert start.utcoffset() == datetime.now(ZoneInfo("America/Los_Angeles")).utcoffset()
     assert (start.hour, start.minute) == (0, 0)
-    assert end - start == timedelta(days=7)
-    assert datetime.fromisoformat(body["start"]) == start
+    assert datetime.fromisoformat(body["end"]) - start == timedelta(days=7)
+    assert datetime.fromisoformat(planner.url.params["start_date"]) == start - timedelta(days=7)
+    assert datetime.fromisoformat(planner.url.params["end_date"]) == datetime.fromisoformat(body["end"])
     missing = next(r for r in canvas.requests if r.url.path.endswith("/missing_submissions"))
     assert missing.url.params.get_list("filter[]") == ["submittable", "current_grading_period"]
 
 
+def _graded_last_week():
+    return [
+        _planner(110, 11, "Problem Set 4", _iso(NOW - timedelta(days=8, hours=12)), submissions={"graded": True}),
+        _planner(111, 11, "Problem Set 5", _iso(NOW - timedelta(days=5)), submissions={"graded": True}),
+        _planner(112, 14, "Quiz 3", PAST, kind="quiz", submissions={"submitted": True, "graded": True}),
+        _planner(113, 12, "Speech draft", PAST, submissions={"graded": True}),
+        _planner(114, 14, "Ungraded essay", PAST, submissions={"submitted": True}),
+    ]
+
+
+def test_overview_lists_recently_graded_work_newest_first(connected, canvas):
+    canvas.lists["/api/v1/planner/items"][0] += _graded_last_week()
+    body = connected.get("/canvas/overview").json()
+    assert [i["id"] for i in body["recently_graded"]] == [113, 112, 111]
+    assert body["recently_graded"][1]["kind"] == "quiz"
+    assert [i["id"] for i in body["upcoming"]] == [101, 103, 102]
+    assert canvas.paths().count("/api/v1/planner/items") == 1
+
+
+def test_recently_graded_is_capped(connected, canvas):
+    canvas.lists["/api/v1/planner/items"] = [[
+        _planner(500 + n, 11, f"Exercise {n}", _iso(NOW - timedelta(days=3, minutes=n)), submissions={"graded": True})
+        for n in range(15)
+    ]]
+    graded = connected.get("/canvas/overview").json()["recently_graded"]
+    assert [i["id"] for i in graded] == list(range(500, 510))
+
+
 def test_overview_leaves_out_hidden_courses(connected, canvas):
+    canvas.lists["/api/v1/planner/items"][0] += _graded_last_week()
     connected.patch("/canvas/connection", json={"hidden_course_ids": [12]})
     body = connected.get("/canvas/overview").json()
     assert 102 not in [i["id"] for i in body["upcoming"]]
     assert [i["id"] for i in body["missing"]] == [201]
+    assert [i["id"] for i in body["recently_graded"]] == [112, 111]
+
+
+def test_a_missing_canvas_route_on_the_overview_is_not_a_missing_course(connected, canvas):
+    del canvas.lists["/api/v1/planner/items"]
+    response = connected.get("/canvas/overview")
+    assert (response.status_code, response.json()["detail"]) == (422, "canvas_not_canvas")
 
 
 def test_an_unknown_time_zone_is_refused(connected, canvas):
@@ -574,6 +610,59 @@ def test_a_token_that_no_longer_decrypts_needs_reconnecting(connected, db, canva
     assert canvas.requests == []
 
 
+def test_a_token_replaced_during_a_fetch_is_not_marked_invalid(connected, db, canvas):
+    def replace_then_reject(request):
+        canvas.respond = None
+        row = get_connection(db, USER_ID)
+        encrypted = crypto.encrypt(NEW_TOKEN, USER_ID)
+        row.token_ciphertext, row.token_nonce = encrypted.ciphertext, encrypted.nonce
+        row.token_last4 = NEW_TOKEN[-4:]
+        db.commit()
+        canvas_cache.evict_user(USER_ID)
+        del canvas.valid[TOKEN]
+        return None
+
+    canvas.respond = replace_then_reject
+    response = connected.get("/canvas/courses")
+    assert (response.status_code, response.json()["detail"]) == (409, "canvas_token_invalid")
+    assert get_connection(db, USER_ID).status == "active"
+
+    canvas.requests.clear()
+    assert connected.get("/canvas/courses").status_code == 200
+    assert canvas.requests[0].headers["Authorization"] == f"Bearer {NEW_TOKEN}"
+
+
+def test_a_token_replaced_during_a_fetch_does_not_cache_the_old_tokens_data(connected, db, canvas):
+    def replace(request):
+        canvas.respond = None
+        row = get_connection(db, USER_ID)
+        encrypted = crypto.encrypt(NEW_TOKEN, USER_ID)
+        row.token_ciphertext, row.token_nonce = encrypted.ciphertext, encrypted.nonce
+        db.commit()
+        canvas_cache.evict_user(USER_ID)
+        return None
+
+    canvas.respond = replace
+    assert connected.get("/canvas/courses").status_code == 200
+    assert get_connection(db, USER_ID).last_synced_at is None
+
+    canvas.requests.clear()
+    connected.get("/canvas/courses")
+    assert canvas.requests[0].headers["Authorization"] == f"Bearer {NEW_TOKEN}"
+
+
+def test_removing_canvas_during_a_fetch_leaves_it_removed(connected, db, canvas):
+    def remove(request):
+        canvas.respond = None
+        delete_connection(db, USER_ID)
+        canvas_cache.evict_user(USER_ID)
+        return None
+
+    canvas.respond = remove
+    assert connected.get("/canvas/courses").status_code == 200
+    assert get_connection(db, USER_ID) is None
+
+
 def test_reconnecting_brings_the_panel_back(connected, canvas):
     del canvas.valid[TOKEN]
     connected.get("/canvas/courses")
@@ -614,6 +703,8 @@ def test_demo_sample_data_fills_the_panel(demo_client, canvas):
     assert any(i["kind"] == "quiz" for i in overview["upcoming"])
     assert any(i["submission"]["late"] for i in overview["upcoming"])
     assert [i["submission"]["missing"] for i in overview["missing"]] == [True]
+    assert [i["id"] for i in overview["recently_graded"]] == [5200, 5100]
+    assert all(i["submission"]["graded"] for i in overview["recently_graded"])
     start, end = datetime.fromisoformat(overview["start"]), datetime.fromisoformat(overview["end"])
     assert all(start <= datetime.fromisoformat(i["due_at"]) < end for i in overview["upcoming"])
 

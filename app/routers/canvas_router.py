@@ -7,7 +7,7 @@ POST   /canvas/connection/test  — re-checks the stored token with Canvas
 PATCH  /canvas/connection       — changes settings (the courses to hide)
 DELETE /canvas/connection       — hard-deletes the connection and its token
 
-GET    /canvas/overview                        — due in the next 7 days, and missing work
+GET    /canvas/overview                        — due in the next 7 days, missing work and recently graded work
 GET    /canvas/courses                         — active courses with current grades
 GET    /canvas/courses/{course_id}/modules     — a course's modules and their items
 GET    /canvas/courses/{course_id}/assignments — a course's assignments and quizzes, with the user's submissions
@@ -191,7 +191,9 @@ def _read_http_error(exc: CanvasError | crypto.EncryptionKeyError) -> HTTPExcept
 def _read(db: Session, current_user: UserInfo, *args, **kwargs) -> canvas_data_crud.Read:
     try:
         return canvas_data_crud.read(db, current_user.id, *args, now=datetime.now(UTC), **kwargs)
-    except CanvasNotFound:
+    except CanvasNotFound as exc:
+        if kwargs.get("course_id") is None:
+            raise _read_http_error(exc) from None
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="canvas_course_not_found") from None
     except (CanvasError, crypto.EncryptionKeyError) as exc:
         raise _read_http_error(exc) from None
@@ -216,7 +218,7 @@ def read_canvas_overview(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Work due from the start of today through the next 7 days, soonest first, and missing work."""
+    """Work due from the start of today through the next 7 days, soonest first, missing and recently graded work."""
     zone = require_time_zone(tz)
     today = datetime.now(zone).date()
     start, end = canvas_data_crud.upcoming_window(today, zone)

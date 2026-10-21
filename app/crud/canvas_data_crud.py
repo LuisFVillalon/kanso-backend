@@ -11,6 +11,9 @@ user's decrypted token:
 - A 401 from Canvas (or a token that no longer decrypts) marks the
   connection invalid, so the panel shows "Reconnect Canvas", and drops the
   user's cached data.
+- The transaction ends before Canvas is called. A fetch's outcome is only
+  recorded (and cached) if the connection still holds the token it used:
+  one replaced or removed meanwhile is left alone.
 - If Canvas is rate-limiting after the client's backoff, or is unreachable,
   the last cached data is served with busy / stale set; with nothing
   cached, the error is raised.
@@ -35,6 +38,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from app.core import canvas_cache, crypto
@@ -70,6 +74,8 @@ TTL = {
 MIN_REFRESH_AGE = timedelta(seconds=30)
 MAX_IN_FLIGHT = 2
 UPCOMING_DAYS = 7
+RECENTLY_GRADED_DAYS = 7
+RECENTLY_GRADED_MAX = 10
 ANNOUNCEMENT_DAYS = 14
 ANNOUNCEMENT_MESSAGE_MAX = 2000
 # Modules whose items Canvas leaves out (long ones) are fetched one by one, up to this many.
@@ -139,34 +145,46 @@ def read(
             raise
         return Read(cached.data, cached.fetched_at, hidden, stale=True)
 
+    base_url, nonce = row.base_url, row.token_nonce
     try:
-        try:
-            token = decrypt_token(row)
-        except crypto.DecryptionError:
-            raise CanvasTokenInvalid("The stored token can't be decrypted.") from None
+        token = decrypt_token(row)
+    except crypto.DecryptionError:
+        token = None
+    db.commit()
+
+    try:
+        if token is None:
+            raise CanvasTokenInvalid("The stored token can't be decrypted.")
         with _in_flight[user_id]:
-            data = fetch(CanvasClient(row.base_url, token))
+            data = fetch(CanvasClient(base_url, token))
     except CanvasTokenInvalid:
-        _mark_invalid(db, row, now)
+        if _record(db, user_id, nonce, {"status": "invalid", "last_error_at": now}):
+            canvas_cache.evict_user(user_id)
         raise
     except CanvasUnavailable as exc:
         if cached is None:
             raise
         return Read(cached.data, cached.fetched_at, hidden, busy=isinstance(exc, CanvasRateLimited), stale=True)
 
+    recorded = _record(db, user_id, nonce, {
+        "last_synced_at": now,
+        "status": case((CanvasConnection.status == "error", "active"), else_=CanvasConnection.status),
+    })
+    if not recorded:
+        return Read(data, now, hidden)
     entry = canvas_cache.put(cache_key, data, now)
-    row.last_synced_at = now
-    if row.status == "error":
-        row.status = "active"
-    db.commit()
     return Read(entry.data, entry.fetched_at, hidden)
 
 
-def _mark_invalid(db: Session, row: CanvasConnection, now: datetime) -> None:
-    row.status = "invalid"
-    row.last_error_at = now
+def _record(db: Session, user_id: str, nonce: bytes, values: dict) -> bool:
+    """Write a fetch's outcome to the connection, unless it was removed or its token replaced meanwhile."""
+    matched = (
+        db.query(CanvasConnection)
+        .filter(CanvasConnection.user_id == user_id, CanvasConnection.token_nonce == nonce)
+        .update(values, synchronize_session=False)
+    )
     db.commit()
-    canvas_cache.evict_user(row.user_id)
+    return matched > 0
 
 
 # ── Fetchers: one per route, each returning normalized shapes ────────────────
@@ -181,20 +199,36 @@ def fetch_overview(start: datetime, end: datetime) -> Callable[[CanvasClient], d
     def fetch(client: CanvasClient) -> dict:
         planner = client.get_list(
             "/planner/items",
-            {"start_date": start.isoformat(), "end_date": end.isoformat(), "per_page": 100},
+            {
+                "start_date": (start - timedelta(days=RECENTLY_GRADED_DAYS)).isoformat(),
+                "end_date": end.isoformat(),
+                "per_page": 100,
+            },
         )
         missing = client.get_list(
             "/users/self/missing_submissions",
             {"include[]": "course", "filter[]": ["submittable", "current_grading_period"], "per_page": 100},
         )
-        upcoming = [item for raw in planner if (item := _planner_item(client.base_url, raw)) is not None]
-        upcoming = [item for item in upcoming if item.due_at is None or start <= item.due_at < end]
+        items = [item for raw in planner if (item := _planner_item(client.base_url, raw)) is not None]
+        upcoming = [item for item in items if item.due_at is None or start <= item.due_at < end]
         upcoming.sort(key=lambda item: (item.due_at is None, item.due_at or end, item.id))
         missing_items = [item for raw in missing if (item := _missing_item(client.base_url, raw)) is not None]
         missing_items.sort(key=lambda item: (item.due_at is None, item.due_at or end, item.id))
-        return {"upcoming": upcoming, "missing": missing_items}
+        return {"upcoming": upcoming, "missing": missing_items, "recently_graded": recently_graded(items, start)}
 
     return fetch
+
+
+def recently_graded(items: list[CanvasItem], start: datetime) -> list[CanvasItem]:
+    """Graded items due in the RECENTLY_GRADED_DAYS before start, newest first, at most RECENTLY_GRADED_MAX."""
+    since = start - timedelta(days=RECENTLY_GRADED_DAYS)
+    graded = [
+        item for item in items
+        if item.submission is not None and item.submission.graded
+        and item.due_at is not None and since <= item.due_at < start
+    ]
+    graded.sort(key=lambda item: (item.due_at, item.id), reverse=True)
+    return graded[:RECENTLY_GRADED_MAX]
 
 
 def fetch_courses(client: CanvasClient) -> list[CanvasCourse]:

@@ -4,8 +4,9 @@ Read-only sample Canvas data for demo sandboxes.
 Demo users can't connect Canvas, so the read routes show them this instead,
 without any Canvas call or database row. It is a made-up SDSU Fall 2026
 term: five courses (COMM 103 hides its final grade), work due over the
-next week (one quiz, one item late), one missing assignment, CS 460's
-modules (the last one locked) and three announcements. Dates are fixed
+next week (one quiz, one item late), one missing assignment, two items
+graded last week, CS 460's modules (the last one locked) and three
+announcements. Dates are fixed
 offsets from the caller's local day, so the same day and time zone always
 give the same data. No item has an html_url: there is no real Canvas to
 link to.
@@ -14,6 +15,7 @@ link to.
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from app.crud.canvas_data_crud import recently_graded
 from app.schemas.canvas_schema import (
     CanvasAnnouncement,
     CanvasAssignment,
@@ -93,7 +95,8 @@ def overview(today: date, tz: ZoneInfo, start: datetime, end: datetime) -> dict:
         CanvasItem(**item.model_dump(include=set(CanvasItem.model_fields))) for item in items
         if item.submission.missing
     ]
-    return {"upcoming": upcoming, "missing": missing}
+    graded = [CanvasItem(**item.model_dump(include=set(CanvasItem.model_fields))) for item in items]
+    return {"upcoming": upcoming, "missing": missing, "recently_graded": recently_graded(graded, start)}
 
 
 def courses() -> list[CanvasCourse]:

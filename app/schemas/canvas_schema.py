@@ -164,6 +164,8 @@ class CanvasOverviewOut(CanvasReadOut):
     upcoming: list[CanvasItem]
     # Past due and not submitted, from Canvas's missing submissions.
     missing: list[CanvasItem]
+    # Graded, due in the 7 days before start, newest first, at most 10.
+    recently_graded: list[CanvasItem]
 
 
 class CanvasCoursesOut(CanvasReadOut):
