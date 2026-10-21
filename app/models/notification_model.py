@@ -16,6 +16,9 @@ class NotificationPreferences(Base):
     quiet_hours_end = Column(String(5), nullable=True)
     # Minutes before a task's due time to remind; NULL means the built-in default.
     default_reminder_minutes = Column(Integer, nullable=True)
+    # Minutes before "Call it a day" to remind about the mood check-in, 30 or
+    # 60; NULL means the built-in default.
+    mood_reminder_minutes = Column(Integer, nullable=True)
 
 
 class NotificationState(Base):

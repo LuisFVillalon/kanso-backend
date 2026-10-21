@@ -8,6 +8,7 @@ import pytest
 from app.crud.notification_crud import get_notifications, prune_states, update_preferences
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
+from app.models.mood_checkin_model import MoodCheckin
 from app.models.notification_model import NotificationState
 from app.models.profile_model import Profile
 from app.models.task_model import Task
@@ -42,6 +43,18 @@ def _habit(db, title, logged: list[date] = (), user_id=USER_ID, **fields) -> Hab
 def _profile(db, **fields) -> None:
     db.add(Profile(user_id=USER_ID, name="Test", **fields))
     db.flush()
+
+
+def _mood(db, *days: date, kind="day", user_id=USER_ID) -> None:
+    for day in days:
+        db.add(MoodCheckin(user_id=user_id, period_kind=kind, period_start=day, mood=3))
+    db.flush()
+
+
+@pytest.fixture
+def without_mood_alerts(db):
+    """Mood alerts are on for every user by default; tests about other types switch them off."""
+    update_preferences(db, USER_ID, {"types": {"mood_reminder": False, "mood_missed": False}})
 
 
 def _ids(db, now: datetime, tz=UTC_TZ) -> list[str]:
@@ -168,6 +181,7 @@ def test_moving_a_due_time_makes_a_new_occurrence(db):
 
 # ── Overdue ──────────────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_date_only_task_gets_no_reminders_and_is_overdue_at_the_next_day_start(db):
     _profile(db, day_start_time="07:00")
     task = _task(db, "Reading", DAY)
@@ -178,6 +192,7 @@ def test_date_only_task_gets_no_reminders_and_is_overdue_at_the_next_day_start(d
     assert overdue.fire_at == _utc(DAY + timedelta(days=1), 7, 0)
 
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_overdue_is_one_notification_until_completed_or_past_retention(db):
     task = _task(db, "Late", DAY, time(9, 0))
     overdue = f"overdue:task-{task.id}:2026-10-20T09:00"
@@ -191,6 +206,7 @@ def test_overdue_is_one_notification_until_completed_or_past_retention(db):
 
 # ── Habit reminder ───────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_habit_reminder_fires_an_hour_before_call_it_a_day_until_midnight(db):
     read = _habit(db, "Read")
     _habit(db, "Stretch", logged=[DAY])
@@ -208,6 +224,7 @@ def test_habit_reminder_fires_an_hour_before_call_it_a_day_until_midnight(db):
     assert _ids(db, _utc(DAY + timedelta(days=1), 0, 0)) == []
 
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_habit_reminder_follows_the_profile_and_skips_done_days_and_rest_days(db):
     _profile(db, shutoff_time="20:30", rest_days=[3])  # Wednesday
     habit = _habit(db, "Read")
@@ -219,6 +236,7 @@ def test_habit_reminder_follows_the_profile_and_skips_done_days_and_rest_days(db
     assert _ids(db, _utc(DAY, 19, 30)) == []
 
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_habit_reminder_for_a_call_it_a_day_after_midnight(db):
     _profile(db, day_start_time="08:00", shutoff_time="01:00")
     _habit(db, "Read")
@@ -226,6 +244,131 @@ def test_habit_reminder_for_a_call_it_a_day_after_midnight(db):
     assert "habit_reminder:habits:2026-10-20" not in _ids(db, _utc(DAY, 23, 59))
     assert _ids(db, _utc(tomorrow, 0, 0)) == ["habit_reminder:habits:2026-10-20"]
     assert _ids(db, _utc(tomorrow, 1, 0)) == []
+
+
+# ── Mood reminder ────────────────────────────────────────────────────────────
+
+def test_mood_reminder_fires_an_hour_before_call_it_a_day_until_midnight(db):
+    assert _ids(db, _utc(DAY, 20, 59)) == []
+    reminder = _by_id(db, _utc(DAY, 21, 0))["mood_reminder:mood:2026-10-20"]
+    assert reminder.type == "mood_reminder"
+    assert reminder.title == "How was your day?"
+    assert reminder.body == "Log your mood check-in before you call it a day at 10:00 PM."
+    assert reminder.dates == [DAY]
+    assert reminder.fire_at == _utc(DAY, 21, 0)
+    assert _ids(db, _utc(DAY, 23, 59)) == ["mood_reminder:mood:2026-10-20"]
+    assert _ids(db, _utc(DAY + timedelta(days=1), 0, 0)) == []
+
+
+def test_mood_reminder_lead_is_30_or_60_minutes(db):
+    _profile(db, shutoff_time="20:00")
+    assert _ids(db, _utc(DAY, 19, 0)) == ["mood_reminder:mood:2026-10-20"]
+    update_preferences(db, USER_ID, {"mood_reminder_minutes": 30})
+    assert _ids(db, _utc(DAY, 19, 29)) == []
+    assert _by_id(db, _utc(DAY, 19, 30))["mood_reminder:mood:2026-10-20"].fire_at == _utc(DAY, 19, 30)
+
+
+def test_mood_reminder_skips_logged_days_rest_days_and_disabled_settings(db):
+    _profile(db, rest_days=[3])  # Wednesday
+    assert _ids(db, _utc(DAY + timedelta(days=1), 21, 0)) == []
+    # A week or month check-in isn't the day's.
+    _mood(db, date(2026, 10, 19), kind="week")
+    _mood(db, DAY, user_id=OTHER_USER_ID)
+    assert _ids(db, _utc(DAY, 21, 0)) == ["mood_reminder:mood:2026-10-20"]
+    _mood(db, DAY)
+    assert _ids(db, _utc(DAY, 21, 0)) == []
+
+    profile = db.query(Profile).filter(Profile.user_id == USER_ID).one()
+    profile.mood_checkins = {"daily": False}
+    db.flush()
+    assert _ids(db, _utc(DAY + timedelta(days=6), 21, 0)) == []
+
+
+def test_mood_reminder_for_a_call_it_a_day_after_midnight(db):
+    _profile(db, day_start_time="08:00", shutoff_time="01:00")
+    tomorrow = DAY + timedelta(days=1)
+    assert "mood_reminder:mood:2026-10-20" not in _ids(db, _utc(DAY, 23, 59))
+    reminder = _by_id(db, _utc(tomorrow, 0, 0))["mood_reminder:mood:2026-10-20"]
+    assert reminder.dates == [DAY]
+    assert "mood_reminder:mood:2026-10-20" not in _ids(db, _utc(tomorrow, 1, 0))
+
+
+def test_mood_reminder_follows_call_it_a_day_across_dst(db):
+    # 22:00 Pacific is 05:00 UTC the next day before the 2026-11-01 fall
+    # back, and 06:00 UTC after it.
+    fall = date(2026, 11, 1)
+    assert _ids(db, _utc(fall, 3, 59), PACIFIC) == []
+    assert _ids(db, _utc(fall, 4, 0), PACIFIC) == ["mood_reminder:mood:2026-10-31"]
+    assert "mood_reminder:mood:2026-11-01" not in _ids(db, _utc(fall + timedelta(days=1), 4, 59), PACIFIC)
+    assert "mood_reminder:mood:2026-11-01" in _ids(db, _utc(fall + timedelta(days=1), 5, 0), PACIFIC)
+
+
+def test_mood_alerts_can_be_switched_off(db):
+    update_preferences(db, USER_ID, {"types": {"mood_reminder": False}})
+    _mood(db, DAY - timedelta(days=3))
+    assert _ids(db, _utc(DAY, 21, 0)) == ["mood_missed:mood:2026-10-20"]
+    update_preferences(db, USER_ID, {"types": {"mood_missed": False}})
+    assert _ids(db, _utc(DAY, 21, 0)) == []
+
+
+# ── Missed mood check-ins ────────────────────────────────────────────────────
+
+def test_mood_missed_lists_the_past_weeks_gaps_at_the_day_start_until_midnight(db):
+    # Logged Oct 13, 15 and 18 of the seven days before Tue Oct 20.
+    _mood(db, date(2026, 10, 13), date(2026, 10, 15), date(2026, 10, 18))
+    _mood(db, date(2026, 10, 14), user_id=OTHER_USER_ID)
+
+    assert _ids(db, _utc(DAY, 7, 59)) == []
+    missed = _by_id(db, _utc(DAY, 8, 0))["mood_missed:mood:2026-10-20"]
+    assert missed.title == "4 missed mood check-ins"
+    assert missed.body == "No check-in for Oct 14, Oct 16, Oct 17 and Oct 19 yet."
+    assert missed.dates == [date(2026, 10, 14), date(2026, 10, 16), date(2026, 10, 17), date(2026, 10, 19)]
+    assert missed.fire_at == _utc(DAY, 8, 0)
+    assert "mood_missed:mood:2026-10-20" in _ids(db, _utc(DAY, 23, 59))
+    assert "mood_missed:mood:2026-10-20" not in _ids(db, _utc(DAY + timedelta(days=1), 7, 59))
+
+    # Backfilling drops the day, and the last one drops the alert.
+    _mood(db, date(2026, 10, 14), date(2026, 10, 16), date(2026, 10, 17))
+    missed = _by_id(db, _utc(DAY, 8, 0))["mood_missed:mood:2026-10-20"]
+    assert missed.title == "1 missed mood check-in"
+    assert missed.body == "No check-in for Oct 19 yet."
+    _mood(db, date(2026, 10, 19))
+    assert "mood_missed:mood:2026-10-20" not in _ids(db, _utc(DAY, 8, 0))
+
+
+def test_mood_missed_starts_at_the_first_check_in_and_skips_rest_days(db):
+    # No daily check-in yet, so nothing is missed.
+    _mood(db, date(2026, 10, 1), kind="month")
+    assert _ids(db, _utc(DAY, 8, 0)) == []
+
+    _profile(db, rest_days=[0, 6], day_start_time="07:00")  # Weekends.
+    _mood(db, date(2026, 10, 15))
+    missed = _by_id(db, _utc(DAY, 7, 0))["mood_missed:mood:2026-10-20"]
+    assert missed.dates == [date(2026, 10, 16), date(2026, 10, 19)]
+    # Not on a rest day itself.
+    assert _ids(db, _utc(date(2026, 10, 24), 7, 0)) == []
+
+
+def test_mood_missed_needs_daily_check_ins_on(db):
+    _profile(db, mood_checkins={"daily": False, "weekly": True})
+    _mood(db, DAY - timedelta(days=5))
+    assert _ids(db, _utc(DAY, 8, 0)) == []
+
+
+def test_mood_remind_off_silences_both_mood_alerts(db):
+    _profile(db, mood_checkins={"remind": "off"})
+    _mood(db, DAY - timedelta(days=3))
+    assert _ids(db, _utc(DAY, 8, 0)) == []
+    assert _ids(db, _utc(DAY, 21, 0)) == []
+
+
+@pytest.mark.parametrize("remind", ["shutoff", "shutoff+30"])
+def test_mood_remind_timing_does_not_change_the_mood_reminder_lead(db, remind):
+    _profile(db, shutoff_time="20:00", mood_checkins={"remind": remind})
+    assert _ids(db, _utc(DAY, 18, 59)) == []
+    assert _by_id(db, _utc(DAY, 19, 0))["mood_reminder:mood:2026-10-20"].fire_at == _utc(DAY, 19, 0)
+    update_preferences(db, USER_ID, {"mood_reminder_minutes": 30})
+    assert _by_id(db, _utc(DAY, 19, 30))["mood_reminder:mood:2026-10-20"].fire_at == _utc(DAY, 19, 30)
 
 
 # ── Quiet hours ──────────────────────────────────────────────────────────────
@@ -250,6 +393,16 @@ def test_alerts_held_past_the_point_they_apply_are_dropped(db):
     # The reminder (05:00) and final warning (06:30) are held until 07:00,
     # when the task is already overdue.
     assert _ids(db, _utc(DAY, 7, 0)) == [f"overdue:task-{task.id}:2026-10-20T07:00"]
+
+
+def test_quiet_hours_hold_and_drop_mood_alerts(db):
+    update_preferences(db, USER_ID, {"quiet_hours_start": "20:30", "quiet_hours_end": "08:30"})
+    _mood(db, DAY - timedelta(days=2))
+    # The missed list waits for the quiet hours to end; the 21:00 reminder
+    # would be held past midnight, when it lapses.
+    assert _ids(db, _utc(DAY, 8, 29)) == []
+    assert _by_id(db, _utc(DAY, 8, 30))["mood_missed:mood:2026-10-20"].fire_at == _utc(DAY, 8, 30)
+    assert "mood_reminder:mood:2026-10-20" not in _ids(db, _utc(DAY, 23, 0))
 
 
 def test_quiet_hours_within_one_day(db):
@@ -285,11 +438,13 @@ def test_preferences_default_to_everything_on(client):
     assert resp.status_code == 200
     assert resp.json() == {
         "types": {
-            "due_today": True, "task_reminder": True, "final_warning": True, "overdue": True, "habit_reminder": True
+            "due_today": True, "task_reminder": True, "final_warning": True, "overdue": True, "habit_reminder": True,
+            "mood_reminder": True, "mood_missed": True,
         },
         "quiet_hours_start": None,
         "quiet_hours_end": None,
         "default_reminder_minutes": 120,
+        "mood_reminder_minutes": 60,
     }
 
 
@@ -313,16 +468,26 @@ def test_preference_updates_validate_and_reset(client):
     assert patch({"quiet_hours_start": "25:00", "quiet_hours_end": "07:00"}).status_code == 422
     assert patch({"types": {"mood_checkin": False}}).status_code == 422
     assert patch({"default_reminder_minutes": 0}).status_code == 422
+    assert patch({"mood_reminder_minutes": 45}).status_code == 422
 
-    resp = patch({"quiet_hours_start": "22:00", "quiet_hours_end": "07:00", "default_reminder_minutes": 45})
+    resp = patch({
+        "quiet_hours_start": "22:00", "quiet_hours_end": "07:00", "default_reminder_minutes": 45,
+        "mood_reminder_minutes": 30,
+    })
     assert resp.json()["quiet_hours_start"] == "22:00"
     assert resp.json()["default_reminder_minutes"] == 45
+    assert resp.json()["mood_reminder_minutes"] == 30
     # Fields left out are kept; nulls clear.
     resp = patch({"types": {"overdue": False}})
     assert resp.json()["quiet_hours_end"] == "07:00"
-    resp = patch({"quiet_hours_start": None, "quiet_hours_end": None, "default_reminder_minutes": None})
+    assert resp.json()["mood_reminder_minutes"] == 30
+    resp = patch({
+        "quiet_hours_start": None, "quiet_hours_end": None, "default_reminder_minutes": None,
+        "mood_reminder_minutes": None,
+    })
     assert resp.json()["quiet_hours_start"] is None
     assert resp.json()["default_reminder_minutes"] == 120
+    assert resp.json()["mood_reminder_minutes"] == 60
     assert resp.json()["types"]["overdue"] is False
 
 
@@ -339,6 +504,7 @@ def _get(client, tz="UTC"):
     return resp.json()
 
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_get_notifications_returns_the_current_list(client, db):
     task = _overdue_task(db)
     _overdue_task(db, "Not mine", user_id=OTHER_USER_ID)
@@ -350,6 +516,7 @@ def test_get_notifications_returns_the_current_list(client, db):
     assert client.get("/get-notifications", params={"tz": "Mars/Base"}).status_code == 422
 
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_mark_read_mark_all_read_and_dismiss(client, db):
     first, second, third = (_overdue_task(db, title) for title in ("One", "Two", "Three"))
     ids = {n["task_ids"][0]: n["id"] for n in _get(client)}
@@ -370,6 +537,7 @@ def test_mark_read_mark_all_read_and_dismiss(client, db):
     assert ids[second.id] not in [n["id"] for n in _get(client)]
 
 
+@pytest.mark.usefixtures("without_mood_alerts")
 def test_read_state_is_per_user(client, db):
     _overdue_task(db)
     [notification] = _get(client)

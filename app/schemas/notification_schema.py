@@ -7,9 +7,11 @@ from pydantic import AfterValidator, BaseModel, Field
 from app.schemas.activity_schema import UtcDatetime
 from app.schemas.limits import NOTIFICATION_IDS_MAX, REMINDER_MINUTES_MAX
 
-# Every alert type. A new one (a mood check-in, Canvas alerts) is added here;
-# stored preferences only hold overrides, so existing rows need no migration.
-NotificationType = Literal["due_today", "task_reminder", "final_warning", "overdue", "habit_reminder"]
+# Every alert type. A new one (Canvas alerts) is added here; stored
+# preferences only hold overrides, so existing rows need no migration.
+NotificationType = Literal[
+    "due_today", "task_reminder", "final_warning", "overdue", "habit_reminder", "mood_reminder", "mood_missed"
+]
 NOTIFICATION_TYPES: tuple[str, ...] = get_args(NotificationType)
 
 # "{type}:{subject}:{occurrence}", where the occurrence starts with its local
@@ -35,6 +37,8 @@ def _check_id(value: str) -> str:
 NotificationId = Annotated[str, Field(max_length=100), AfterValidator(_check_id)]
 # Local wall-clock time, as the profile stores day_start_time and shutoff_time.
 HourMinute = Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
+# How long before "Call it a day" the mood check-in reminder fires.
+MoodReminderMinutes = Literal[30, 60]
 
 
 class Notification(BaseModel):
@@ -48,6 +52,8 @@ class Notification(BaseModel):
     # The tasks or habits it is about.
     task_ids: list[int] = []
     habit_ids: list[int] = []
+    # The local days a mood check-in is due or missing for.
+    dates: list[date] = []
     read: bool = False
 
 
@@ -57,6 +63,7 @@ class NotificationPreferences(BaseModel):
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
     default_reminder_minutes: int
+    mood_reminder_minutes: MoodReminderMinutes
 
 
 class NotificationPreferencesUpdate(BaseModel):
@@ -67,6 +74,7 @@ class NotificationPreferencesUpdate(BaseModel):
     quiet_hours_end: HourMinute | None = None
     # null restores the built-in default.
     default_reminder_minutes: int | None = Field(None, ge=1, le=REMINDER_MINUTES_MAX)
+    mood_reminder_minutes: MoodReminderMinutes | None = None
 
 
 class NotificationIds(BaseModel):
