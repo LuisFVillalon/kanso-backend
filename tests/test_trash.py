@@ -46,6 +46,13 @@ def _ids(resp):
     return {row["id"] for row in resp.json()}
 
 
+def _link_directly(db, child_id, parent_id):
+    """Link a task below another straight in the database, as trees deeper
+    than the one-level rule could be saved before it existed."""
+    db.get(Task, child_id).parent_task_id = parent_id
+    db.commit()
+
+
 def _trash(client):
     resp = client.get("/get-trash")
     assert resp.status_code == 200, resp.text
@@ -360,10 +367,11 @@ def test_expired_deleted_tag_is_not_revived_by_attaching_its_name(client, db):
 # ── Tasks and subtasks ───────────────────────────────────────────────────────
 
 
-def test_deleting_a_task_takes_its_subtasks_along(client):
+def test_deleting_a_task_takes_its_subtasks_along(client, db):
     parent = _create(client, "task", title="Parent")
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
-    grandchild = _create(client, "task", title="Grandchild", parent_task_id=child["id"])
+    grandchild = _create(client, "task", title="Grandchild")
+    _link_directly(db, grandchild["id"], child["id"])
     unrelated = _create(client, "task", title="Unrelated")
 
     _delete(client, "task", parent["id"])
@@ -390,11 +398,12 @@ def test_restoring_a_task_keeps_subtasks_deleted_on_their_own(client):
     assert [i["id"] for i in _trash(client)] == [deleted_first["id"]]
 
 
-def test_restoring_a_subtask_restores_its_deleted_ancestors_only(client):
+def test_restoring_a_subtask_restores_its_deleted_ancestors_only(client, db):
     root = _create(client, "task", title="Root")
-    parent = _create(client, "task", title="Parent", parent_task_id=root["id"])
+    parent = _create(client, "task", title="Parent")
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
     sibling = _create(client, "task", title="Sibling", parent_task_id=parent["id"])
+    _link_directly(db, parent["id"], root["id"])
 
     _delete(client, "task", root["id"])
     assert client.patch(f"/restore-task/{child['id']}").status_code == 200

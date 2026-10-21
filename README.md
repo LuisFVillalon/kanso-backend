@@ -29,7 +29,7 @@ erDiagram
     HABITS }o--o{ TAGS : habit_tags
     HABITS ||--o{ HABIT_LOGS : "one per logged day"
     NOTES ||--o{ NOTE_SESSIONS : "editing time"
-    TASKS ||--o{ TASKS : "parent / subtasks"
+    TASKS ||--o{ TASKS : "parent / linked tasks"
 ```
 
 Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker), `drawings` (the doodle canvas) and `notification_preferences`; `notification_states` holds read and dismissed state per notification, and `mood_checkins` holds one mood check-in per day, week or month. Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
@@ -57,7 +57,7 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 
 | Area | Endpoints |
 |---|---|
-| Tasks | `GET /get-tasks` · `POST /create-task` · `PUT /update-task/{id}` · `PATCH /update-task-status/{id}` · `PATCH /archive-task/{id}` · `PATCH /unarchive-task/{id}` · `DELETE /del-task/{id}` · `PATCH /restore-task/{id}` · `DELETE /purge-task/{id}` |
+| Tasks | `GET /get-tasks` · `POST /create-task` · `PUT /update-task/{id}` · `PUT /update-linked-tasks/{id}` · `PATCH /update-task-status/{id}` · `PATCH /archive-task/{id}` · `PATCH /unarchive-task/{id}` · `DELETE /del-task/{id}` · `PATCH /restore-task/{id}` · `DELETE /purge-task/{id}` |
 | Tags | `GET /get-tags` · `POST /create-tags` · `PUT /update-tag/{id}` · `PATCH /archive-tag/{id}` · `PATCH /unarchive-tag/{id}` · `DELETE /del-tag/{id}` · `PATCH /restore-tag/{id}` · `DELETE /purge-tag/{id}` |
 | Notes | `GET /get-notes` · `POST /create-note` · `PUT /update-note/{id}` · `PATCH /archive-note/{id}` · `PATCH /unarchive-note/{id}` · `DELETE /del-note/{id}` · `PATCH /restore-note/{id}` · `DELETE /purge-note/{id}` |
 | Note time | `POST /note-session/start` · `PUT /note-session/end/{id}` · `GET /note-session/total/{note_id}` · `GET /note-session/totals` · `GET /note-session/totals-range` · `POST /note-session/reap` |
@@ -71,6 +71,10 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 | Doodle canvas | `GET /get-drawing` · `POST /save-drawing` · `DELETE /delete-drawing` |
 | Account | `POST /update-password` (email accounts only) · `DELETE /delete-account` |
 | Demo | `POST /demo/seed?local_date=` (anonymous users only) |
+
+**Linked tasks.** A task can have linked tasks: tasks that lead up to completing it, stored as subtasks (`parent_task_id`). Each task has at most one parent, and links go one level deep: a linked task can't have linked tasks of its own, and a task that has them can't be linked under another. Links that would form a loop, or put a task under an archived parent, are rejected too. Every way of setting a parent (`POST /create-task`, `PUT /update-task/{id}` and the endpoint below) answers these with a 400; `PUT /update-task/{id}` checks only a changed parent, so re-saving a task under its current parent works even in deeper trees saved before the rule. Linked tasks carry a `position` (`null` for top-level tasks) and belong under their parent in order of `position`, then `id`; a task created or moved under a parent goes last, and links made before ordering existed have a `null` position and sort after the rest.
+
+`PUT /update-linked-tasks/{id}` saves all of a task's linked tasks in one transaction. The body lists them in order, each either an existing task or the title of a new one, up to 100: `{"children": [{"id": 12}, {"title": "Draft cover letter"}]}`. Existing tasks are linked, and moved here if they had another parent. New ones are created with the parent's tags and no due date or priority. Each gets its index as its `position`. Active linked tasks left out are unlinked, not deleted; archived ones stay linked, since the client doesn't see them. Listing an archived, deleted or missing task, or the same task twice, is a 400 and saves nothing. The response is `{"parent": Task, "children": [Task, ...]}`, children in order.
 
 **Archiving.** Tasks, notes, tags and habits carry an `archived_at` timestamp (`null` while active). `GET /get-tasks`, `/get-notes`, `/get-tags` and `/get-habits` return active rows only; pass `?archived=true` to list the archived ones instead. Archiving a task also archives its subtasks, and restoring it restores the subtasks archived with it plus any archived parents above it. Archiving a tag only hides it: tasks, notes and habits keep it in their `tags` lists. Creating or updating a task or note with an archived tag it didn't already carry restores that tag. Archived tasks, notes and habits are left out of the daily debrief and note-time totals, and archived habits are skipped by `POST /verify-streaks`.
 
