@@ -43,6 +43,38 @@ def _validate_priority_unique(db: Session, user_id: str, priority: int, exclude_
         )
 
 
+def _open_canvas_task(
+    db: Session, user_id: str, canvas_assignment_id: int, exclude_task_id: int | None = None
+) -> TaskModel | None:
+    """The user's open (not completed, archived or deleted) task following this Canvas assignment, if any."""
+    q = db.query(TaskModel).filter(
+        TaskModel.user_id == user_id,
+        TaskModel.canvas_assignment_id == canvas_assignment_id,
+        TaskModel.completed.is_not(True),
+        archived_filter(TaskModel, False),
+        deleted_filter(TaskModel, False),
+    )
+    if exclude_task_id is not None:
+        q = q.filter(TaskModel.id != exclude_task_id)
+    return q.order_by(TaskModel.id).first()
+
+
+def _validate_canvas_unique(
+    db: Session, user_id: str, canvas_assignment_id: int, exclude_task_id: int | None = None
+) -> None:
+    """Raise 409, with the existing task's id, if an open task already follows this Canvas assignment."""
+    existing = _open_canvas_task(db, user_id, canvas_assignment_id, exclude_task_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "canvas_task_exists",
+                "message": "An open task already follows this Canvas assignment.",
+                "task_id": existing.id,
+            },
+        )
+
+
 def _get_parent(db: Session, parent_task_id: int, user_id: str) -> TaskModel:
     """The user's live task to link under, or 400 if it doesn't exist or belongs to a different user."""
     parent = get_owned(db, TaskModel, parent_task_id, user_id)
@@ -123,6 +155,8 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
     priority = task.priority
     if priority is not None:
         _validate_priority_unique(db, user_id, priority)
+    if task.canvas_assignment_id is not None and not task.completed:
+        _validate_canvas_unique(db, user_id, task.canvas_assignment_id)
     position = None
     if task.parent_task_id is not None:
         parent = _get_parent(db, task.parent_task_id, user_id)
@@ -143,6 +177,8 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
         parent_task_id=task.parent_task_id,
         position=position,
         reminder_minutes=task.reminder_minutes,
+        canvas_assignment_id=task.canvas_assignment_id,
+        canvas_html_url=task.canvas_html_url,
         user_id=user_id,
     )
     set_item_tags(db, db_task, task.tags, user_id)
@@ -231,13 +267,30 @@ _TASK_UPDATE_FIELDS = (
     "title", "description", "category", "completed", "due_date",
     "due_time", "estimated_time", "parent_task_id", "reminder_minutes",
 )
+# Replaced only when the payload includes them, so a client that predates the
+# Canvas link doesn't unlink a task by saving it.
+_CANVAS_FIELDS = ("canvas_assignment_id", "canvas_html_url")
 
 
 def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
-    """Replace all fields of an existing task, except its position. Returns None if not found."""
+    """Replace all fields of an existing task, except its position. Returns None if not found.
+
+    The Canvas link fields are replaced only when the payload includes them.
+    """
     db_task = get_owned(db, TaskModel, task_id, user_id)
     if not db_task:
         return None
+
+    canvas_fields = [field for field in _CANVAS_FIELDS if field in task.model_fields_set]
+    # Like priority, only a newly set link is checked, so a task already
+    # following an assignment re-saves as it is.
+    if (
+        "canvas_assignment_id" in canvas_fields
+        and task.canvas_assignment_id is not None
+        and task.canvas_assignment_id != db_task.canvas_assignment_id
+        and not task.completed
+    ):
+        _validate_canvas_unique(db, user_id, task.canvas_assignment_id, exclude_task_id=task_id)
 
     # Only a changed link is checked, so re-saving a task under its current
     # parent works even for links made before the one-level rule.
@@ -255,7 +308,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
 
     was_completed = db_task.completed
 
-    for field in _TASK_UPDATE_FIELDS:
+    for field in (*_TASK_UPDATE_FIELDS, *canvas_fields):
         setattr(db_task, field, getattr(task, field))
 
     # completed_date is always server-computed (like create_task/update_task_status)

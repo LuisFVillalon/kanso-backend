@@ -1,9 +1,12 @@
 from datetime import date, datetime, time
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.limits import (
+    CANVAS_ID_MAX,
+    CANVAS_URL_MAX,
     LINKED_TASKS_MAX,
     REMINDER_MINUTES_MAX,
     SHORT_MAX,
@@ -31,6 +34,10 @@ class TaskBase(BaseModel):
     # Minutes before the due time to send the reminder; null uses the user's
     # default from the notification preferences.
     reminder_minutes: int | None = None
+    # Set on tasks added from the Canvas panel: the Canvas assignment the task
+    # follows (its assignment id, not a classic quiz's quiz_id) and its page.
+    canvas_assignment_id: int | None = None
+    canvas_html_url: str | None = None
 
     tags: list[TagCreate] = []
 
@@ -70,6 +77,24 @@ class TaskCreate(TaskBase):
     category: str | None = Field(None, max_length=SHORT_MAX)
     reminder_minutes: int | None = Field(None, ge=1, le=REMINDER_MINUTES_MAX)
     tags: list[TagCreate] = Field([], max_length=TAGS_PER_ITEM_MAX)
+    canvas_assignment_id: int | None = Field(None, ge=1, le=CANVAS_ID_MAX)
+    canvas_html_url: str | None = Field(None, max_length=CANVAS_URL_MAX)
+
+    @field_validator("canvas_html_url")
+    @classmethod
+    def https_url(cls, v):
+        # The frontend renders it as a link, so only an absolute https URL
+        # (never javascript:, a custom port or credentials) is stored.
+        if v is None or v == "":
+            return None
+        try:
+            parts = urlsplit(v)
+            port = parts.port
+        except ValueError:
+            raise ValueError("canvas_html_url must be an https URL") from None
+        if parts.scheme != "https" or not parts.hostname or port not in (None, 443) or parts.username or parts.password:
+            raise ValueError("canvas_html_url must be an https URL")
+        return v
 
 
 class Task(TaskBase):

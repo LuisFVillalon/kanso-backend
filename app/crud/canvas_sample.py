@@ -110,6 +110,11 @@ def assignments(course_id: int, today: date, tz: ZoneInfo) -> list[CanvasAssignm
     return sorted((a for a in _items(today, tz) if a.course_id == course_id), key=lambda a: a.due_at)
 
 
+def assignments_by_id(today: date, tz: ZoneInfo) -> dict[int, CanvasAssignment]:
+    """Every sample assignment by id, for syncing a demo sandbox's linked tasks."""
+    return {a.id: a for a in _items(today, tz)}
+
+
 def modules(course_id: int, today: date, tz: ZoneInfo) -> list[CanvasModule] | None:
     """CS 460 has modules; the other sample courses have none. None if there's no such sample course."""
     if course_id not in _CODES:
