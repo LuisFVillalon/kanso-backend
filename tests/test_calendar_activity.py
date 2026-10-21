@@ -264,3 +264,57 @@ def test_demo_seed_completions_appear_in_activity(client, db):
     seeded_done = {t.title for t in db.query(Task).filter(Task.user_id == USER_ID, Task.completed == True)}  # noqa: E712
     assert {t["title"] for t in activity["completed_tasks"]} == seeded_done
     assert activity["note_sessions"] and activity["habit_completions"]
+
+
+def test_include_archived_adds_archived_items_but_never_trashed_ones(client, db):
+    _task(db, "Active", WEEK_START)
+    archived_task = _task(db, "Archived", WEEK_START, completed=True,
+                          completed_date=datetime(2026, 10, 13, 12, 0), archived=True)
+    trashed_task = _task(db, "Trashed", WEEK_START, completed=True, completed_date=datetime(2026, 10, 13, 12, 0))
+    note = _note(db, "Active note")
+    archived_note = _note(db, "Archived note", archived=True)
+    trashed_note = _note(db, "Trashed note")
+    for n in (note, archived_note, trashed_note):
+        _session(db, n, datetime(2026, 10, 13, 9, 0), datetime(2026, 10, 13, 10, 0))
+    _habit(db, "Active habit", [WEEK_START])
+    archived_habit = _habit(db, "Archived habit", [WEEK_START])
+    trashed_habit = _habit(db, "Trashed habit", [WEEK_START])
+    _task(db, "Someone else's archived", WEEK_START, user_id=OTHER_USER_ID, archived=True)
+    db.commit()
+    assert client.patch(f"/archive-habit/{archived_habit.id}").status_code == 200
+    for path in (f"/del-task/{trashed_task.id}", f"/del-note/{trashed_note.id}", f"/del-habit/{trashed_habit.id}"):
+        assert client.delete(path).status_code == 200
+
+    def titles(activity):
+        return {
+            "scheduled": [t["title"] for t in activity["scheduled_tasks"]],
+            "completed": [t["title"] for t in activity["completed_tasks"]],
+            "sessions": [s["note_title"] for s in activity["note_sessions"]],
+            "habits": [c["habit_title"] for c in activity["habit_completions"]],
+        }
+
+    default = titles(_activity(client))
+    assert default == titles(_activity(client, include_archived="false"))
+    assert default == {
+        "scheduled": ["Active"],
+        "completed": [],
+        "sessions": ["Active note"],
+        "habits": ["Active habit"],
+    }
+
+    assert titles(_activity(client, include_archived="true")) == {
+        "scheduled": ["Active", "Archived"],
+        "completed": ["Archived"],
+        "sessions": ["Active note", "Archived note"],
+        "habits": ["Active habit", "Archived habit"],
+    }
+    assert _activity(client, include_archived="true")["completed_tasks"][0]["id"] == archived_task.id
+
+    # Archiving a task archives its subtasks, which then come along too.
+    parent = _task(db, "Parent", WEEK_END)
+    _task(db, "Subtask", WEEK_END, parent_task_id=parent.id)
+    db.commit()
+    assert client.patch(f"/archive-task/{parent.id}").status_code == 200
+    scheduled = titles(_activity(client, include_archived="true"))["scheduled"]
+    assert scheduled[-2:] == ["Parent", "Subtask"]
+    assert titles(_activity(client))["scheduled"] == ["Active"]
