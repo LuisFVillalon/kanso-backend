@@ -21,6 +21,7 @@ class Profile(Base):
     daily_brief_collapsed = Column(Boolean, nullable=True)
     dashboard_view = Column(String, nullable=True)
     notes_view_mode = Column(String, nullable=True)
+    home_panels = Column(String, nullable=True)
     # Mood check-in settings the user has changed; NULL or a missing key means
     # that setting's default (see schemas/mood_schema.py:MoodCheckinSettings).
     mood_checkins = Column(JSON, nullable=True)
