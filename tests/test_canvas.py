@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import gzip
+import inspect
 import logging
 import os
 import time
@@ -86,10 +87,38 @@ class FakeCanvas:
         return httpx.Response(404, json={"errors": [{"message": "The specified resource does not exist."}]})
 
 
+class _NetworkBody(httpx.AsyncByteStream):
+    """A body that arrives unread, like one off the network."""
+
+    def __init__(self, content: bytes):
+        self._content = content
+
+    async def __aiter__(self):
+        yield self._content
+
+
+def _over_the_network(fake: FakeCanvas):
+    """A handler that delivers fake's responses as a network would, with their bodies still to be read.
+
+    httpx.Response(content=b"...") or (json=...) loads its body up front, which
+    a real response never has; the client reads the raw stream to cap its size.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        response = fake(request)
+        if inspect.isawaitable(response):
+            response = await response
+        if not response.is_stream_consumed:
+            return response
+        return httpx.Response(response.status_code, headers=response.headers, stream=_NetworkBody(response.content))
+
+    return handler
+
+
 @pytest.fixture
 def canvas(monkeypatch):
     fake = FakeCanvas()
-    monkeypatch.setattr(canvas_client, "transport", httpx.MockTransport(fake))
+    monkeypatch.setattr(canvas_client, "transport", httpx.MockTransport(_over_the_network(fake)))
     monkeypatch.setattr(canvas_client, "_resolve", lambda host: [PUBLIC_IP])
     monkeypatch.setattr(canvas_router, "_canvas_call_limiter", RateLimiter(max_calls=10, period=60))
     return fake
