@@ -3,6 +3,7 @@
 import base64
 import logging
 import os
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -30,6 +31,8 @@ from app.routers import canvas_router
 from tests.conftest import USER_ID
 
 BASE_URL = "https://sdsu.instructure.com"
+HOST = "sdsu.instructure.com"
+PUBLIC_IP = "151.101.1.1"
 TOKEN = "7~Hq2aXbYcZdWeVfUgThSiRjQkPlOmNnMoLpKqJrIsHtGuFvEwDxCyBzA1b2c3d7Hq2"
 NEW_TOKEN = "7~Zz9aXbYcZdWeVfUgThSiRjQkPlOmNnMoLpKqJrIsHtGuFvEwDxCyBzA1b2c3dR4nd"
 OTHER_ACCOUNT_TOKEN = "7~Oo0aXbYcZdWeVfUgThSiRjQkPlOmNnMoLpKqJrIsHtGuFvEwDxCyBzA1b2c3dOthr"
@@ -62,9 +65,13 @@ class FakeCanvas:
         self.requests: list[httpx.Request] = []
         # Set to a callable to answer every request differently.
         self.respond = None
+        # Addresses that refuse connections.
+        self.refused_addresses: set[str] = set()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.url.host in self.refused_addresses:
+            raise httpx.ConnectError("Connection refused")
         if self.respond:
             return self.respond(request)
         token = request.headers.get("Authorization", "").removeprefix("Bearer ")
@@ -81,7 +88,7 @@ class FakeCanvas:
 def canvas(monkeypatch):
     fake = FakeCanvas()
     monkeypatch.setattr(canvas_client, "transport", httpx.MockTransport(fake))
-    monkeypatch.setattr(canvas_client, "_resolve", lambda host: ["151.101.1.1"])
+    monkeypatch.setattr(canvas_client, "_resolve", lambda host: [PUBLIC_IP])
     monkeypatch.setattr(canvas_router, "_canvas_call_limiter", RateLimiter(max_calls=10, period=60))
     return fake
 
@@ -215,11 +222,81 @@ def test_hosts_that_do_not_resolve_are_refused(canvas, monkeypatch):
 
 # ── Canvas client ────────────────────────────────────────────────────────────
 
-def test_get_self_sends_the_token_as_a_bearer_header(canvas):
+def test_get_self_sends_the_token_to_the_checked_address_under_the_school_host_name(canvas):
     assert CanvasClient(BASE_URL, TOKEN).get_self() == {"id": 42, "name": "Ada Lovelace"}
     [request] = canvas.requests
-    assert str(request.url) == f"{BASE_URL}/api/v1/users/self"
+    assert str(request.url) == f"https://{PUBLIC_IP}/api/v1/users/self"
+    assert request.headers["Host"] == HOST
+    assert request.extensions["sni_hostname"] == HOST
     assert request.headers["Authorization"] == f"Bearer {TOKEN}"
+
+
+class RebindingResolver:
+    """DNS that answers a public address first and a private one on every later lookup."""
+
+    def __init__(self, private="127.0.0.1"):
+        self.private = private
+        self.lookups = 0
+
+    def __call__(self, host):
+        self.lookups += 1
+        return [PUBLIC_IP] if self.lookups == 1 else [self.private]
+
+
+@pytest.mark.parametrize("private", ["127.0.0.1", "169.254.169.254", "fdaa::3"])
+def test_a_host_rebinding_to_a_private_address_after_the_check_is_never_connected_to(canvas, monkeypatch, private):
+    resolver = RebindingResolver(private)
+    monkeypatch.setattr(canvas_client, "_resolve", resolver)
+    client = CanvasClient(BASE_URL, TOKEN)
+    client.get_self()
+    client.get_token_expiry()
+    assert resolver.lookups == 1
+    assert len(canvas.requests) == 2
+    assert {r.url.host for r in canvas.requests} == {PUBLIC_IP}
+    assert all(r.headers["Host"] == HOST and r.extensions["sni_hostname"] == HOST for r in canvas.requests)
+
+
+def test_connecting_never_reaches_a_host_that_rebinds_to_a_private_address(client, canvas, monkeypatch):
+    resolver = RebindingResolver()
+    monkeypatch.setattr(canvas_client, "_resolve", resolver)
+    assert _connect(client).status_code == 200
+    assert resolver.lookups == 1
+    assert [r.url.host for r in canvas.requests] == [PUBLIC_IP, PUBLIC_IP]
+
+
+def test_a_refused_address_falls_back_to_the_next_checked_one(canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "_resolve", lambda host: ["151.101.65.1", PUBLIC_IP])
+    canvas.refused_addresses = {"151.101.65.1"}
+    assert CanvasClient(BASE_URL, TOKEN).get_self()["id"] == 42
+    assert [r.url.host for r in canvas.requests] == ["151.101.65.1", PUBLIC_IP]
+
+
+def test_an_oversized_answer_is_abandoned_without_reading_it_all(canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "MAX_RESPONSE_BYTES", 1000)
+    sent = []
+
+    def body():
+        for _ in range(100):
+            sent.append(1)
+            yield b"x" * 100
+
+    canvas.respond = lambda request: httpx.Response(200, content=body())
+    with pytest.raises(CanvasNotCanvas):
+        CanvasClient(BASE_URL, TOKEN).get_self()
+    assert len(sent) < 100
+
+
+def test_an_answer_trickling_past_the_deadline_is_abandoned(canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "DEADLINE", 0.05)
+
+    def body():
+        for _ in range(50):
+            time.sleep(0.01)
+            yield b" "
+
+    canvas.respond = lambda request: httpx.Response(200, content=body())
+    with pytest.raises(CanvasUnavailable):
+        CanvasClient(BASE_URL, TOKEN).get_self()
 
 
 @pytest.mark.parametrize(

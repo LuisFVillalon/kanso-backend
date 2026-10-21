@@ -78,7 +78,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="kanso API",
-    description="Tasks, notes, habits, mood check-ins, notifications, daily-debrief and Canvas API behind the kanso web app.",
+    description=(
+        "Tasks, notes, habits, mood check-ins, notifications, daily-debrief and Canvas API behind the kanso web app."
+    ),
     lifespan=lifespan,
 )
 
