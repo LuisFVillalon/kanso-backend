@@ -1,4 +1,18 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, Numeric, String, Time, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    Time,
+    func,
+    text,
+)
 from sqlalchemy.orm import relationship
 
 from app.database.database import Base
@@ -24,6 +38,13 @@ class Task(Base):
         Index("ix_tasks_deleted_at", "deleted_at", postgresql_where=text("deleted_at IS NOT NULL")),
         # Detaching subtasks of purged parents, and the FK check on deleting them.
         Index("ix_tasks_parent_task_id", "parent_task_id", postgresql_where=text("parent_task_id IS NOT NULL")),
+        # The Canvas linked-task sync and the duplicate check read tasks by assignment.
+        Index(
+            "ix_tasks_user_id_canvas_assignment_id",
+            "user_id",
+            "canvas_assignment_id",
+            postgresql_where=text("canvas_assignment_id IS NOT NULL"),
+        ),
     )
 
     id = Column(Integer, primary_key=True)
@@ -44,6 +65,14 @@ class Task(Base):
     # Minutes before the due time to send the reminder notification; NULL
     # means the user's default (see notification_crud).
     reminder_minutes = Column(Integer, nullable=True)
+    # The Canvas assignment a task added from the Canvas panel follows (see
+    # crud/canvas_link_crud.py), and its page on the school's Canvas; NULL
+    # for every other task. Canvas ids can exceed 32 bits.
+    canvas_assignment_id = Column(BigInteger, nullable=True)
+    canvas_html_url = Column(Text, nullable=True)
+    # The assignment's due_at as of the last sync, so a sync moves the task's
+    # due date only when Canvas's changed, not when the user edited it.
+    canvas_due_at = Column(DateTime(timezone=True), nullable=True)
     user_id = Column(String(36), nullable=True, index=True)
     # Set when the task is archived; NULL means active.
     archived_at = Column(DateTime(timezone=True), nullable=True)

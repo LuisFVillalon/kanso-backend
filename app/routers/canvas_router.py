@@ -12,11 +12,14 @@ GET    /canvas/courses                         — active courses with current g
 GET    /canvas/courses/{course_id}/modules     — a course's modules and their items
 GET    /canvas/courses/{course_id}/assignments — a course's assignments and quizzes, with the user's submissions
 GET    /canvas/announcements                   — the last 14 days of announcements
+POST   /canvas/linked-tasks/sync               — tasks added from Canvas: submitted yet, and due date changes
 
 The read routes proxy Canvas through a short cache (crud/canvas_data_crud.py)
 and return fetched_at, busy and stale with the data. Demo sandboxes get
 read-only sample data from them (crud/canvas_sample.py), with sample=true and
-no Canvas call, so the panel can be shown off.
+no Canvas call, so the panel can be shown off. The linked-task sync
+(crud/canvas_link_crud.py) reads assignments the same way, and syncs demo
+sandboxes against the sample data.
 
 Demo sandboxes are refused with 403 on the connection routes: they'd be
 handing a real Canvas token to a throwaway account. Canvas-specific failures return a stable code as
@@ -46,7 +49,7 @@ from app.core.canvas_client import (
 )
 from app.core.http_utils import require_time_zone
 from app.core.rate_limit import RateLimiter
-from app.crud import canvas_data_crud, canvas_sample
+from app.crud import canvas_data_crud, canvas_link_crud, canvas_sample
 from app.crud.canvas_crud import (
     CanvasAccountChanged,
     check_connection,
@@ -65,6 +68,7 @@ from app.schemas.canvas_schema import (
     CanvasConnectionOut,
     CanvasConnectionUpdate,
     CanvasCoursesOut,
+    CanvasLinkedSyncOut,
     CanvasModulesOut,
     CanvasOverviewOut,
 )
@@ -320,3 +324,26 @@ def read_canvas_announcements(
         stale=courses.stale or result.stale,
         announcements=[a for a in result.data if a.course_id not in result.hidden_course_ids],
     )
+
+
+@router.post("/linked-tasks/sync", response_model=CanvasLinkedSyncOut)
+def sync_canvas_linked_tasks(
+    tz: str = _TZ,
+    refresh: bool = _REFRESH,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """For each open task added from Canvas: whether it's submitted, and its due date moved to Canvas's if changed.
+
+    Tasks are never completed here; the frontend offers that when submitted is true.
+    """
+    zone = require_time_zone(tz)
+    now = datetime.now(UTC)
+    if current_user.is_anonymous:
+        results = canvas_link_crud.sync_sample(db, current_user.id, zone, now.astimezone(zone).date())
+        return CanvasLinkedSyncOut(**_sample(), results=results)
+    try:
+        result = canvas_link_crud.sync(db, current_user.id, zone, now, refresh=refresh)
+    except (CanvasError, crypto.EncryptionKeyError) as exc:
+        raise _read_http_error(exc) from None
+    return CanvasLinkedSyncOut(**result)

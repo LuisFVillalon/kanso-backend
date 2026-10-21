@@ -184,3 +184,21 @@ class CanvasAssignmentsOut(CanvasReadOut):
 
 class CanvasAnnouncementsOut(CanvasReadOut):
     announcements: list[CanvasAnnouncement]
+
+
+class CanvasLinkedTaskSync(BaseModel):
+    """One open task added from Canvas, after a linked-task sync."""
+
+    task_id: int
+    # False when the assignment couldn't be read, so the task was left alone.
+    synced: bool
+    # Canvas shows the assignment submitted: offer to complete the task.
+    submitted: bool = False
+    # The assignment's due date on Canvas; null if it has none (or not synced).
+    due_at: datetime | None = None
+    # The task's due date and time were moved to due_at.
+    due_changed: bool = False
+
+
+class CanvasLinkedSyncOut(CanvasReadOut):
+    results: list[CanvasLinkedTaskSync]
