@@ -29,6 +29,7 @@ class ActivityTask(BaseModel):
     completed_date: UtcDatetime | None = None
     parent_task_id: int | None = None
     tags: VisibleTags = []
+    archived: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -40,6 +41,8 @@ class ActivityNoteSession(BaseModel):
     started_at: UtcDatetime
     ended_at: UtcDatetime
     duration_seconds: int
+    # Whether the session's note is archived.
+    archived: bool = False
 
 
 class ActivityHabitCompletion(BaseModel):
@@ -47,6 +50,8 @@ class ActivityHabitCompletion(BaseModel):
     habit_title: str
     date: date
     estimated_time: float | None = None
+    # Whether the habit is archived.
+    archived: bool = False
 
 
 class CalendarActivity(BaseModel):

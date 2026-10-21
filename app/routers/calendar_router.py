@@ -46,12 +46,19 @@ def read_calendar_activity(
             "note sessions are matched against the UTC instants the caller's local days cover."
         ),
     ),
+    include_archived: bool = Query(
+        False,
+        description=(
+            "Also include archived tasks, archived notes' sessions and archived habits' logs, "
+            "each marked archived. Deleted (trashed) items are always left out."
+        ),
+    ),
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Return the user's planned and completed tasks, note sessions and habit
     completions across [start_date, end_date], for the calendar week view and
-    weekly/monthly/yearly reports."""
+    weekly/monthly/yearly reports (which ask for archived items too)."""
     if start_date > end_date:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must not be after end_date.")
     if (end_date - start_date).days + 1 > ACTIVITY_RANGE_MAX_DAYS:
@@ -59,4 +66,4 @@ def read_calendar_activity(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"The range may span at most {ACTIVITY_RANGE_MAX_DAYS} days.",
         )
-    return get_calendar_activity(db, current_user.id, start_date, end_date, require_time_zone(tz))
+    return get_calendar_activity(db, current_user.id, start_date, end_date, require_time_zone(tz), include_archived)
