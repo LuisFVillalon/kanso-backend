@@ -49,8 +49,8 @@ def read_calendar_activity(
     include_archived: bool = Query(
         False,
         description=(
-            "Also include archived tasks, archived notes' sessions and archived habits' logs, "
-            "each marked archived. Deleted (trashed) items are always left out."
+            "Also include archived tasks, archived notes' sessions and archived habits' logs. "
+            "Deleted (trashed) items are always left out."
         ),
     ),
     current_user: UserInfo = Depends(get_current_user),

@@ -22,18 +22,13 @@ def _local_midnight_utc(day: date, tz: ZoneInfo) -> datetime:
     return datetime.combine(day, time.min, tzinfo=tz).astimezone(UTC).replace(tzinfo=None)
 
 
-def _activity_task(task: TaskModel) -> ActivityTask:
-    return ActivityTask.model_validate(task).model_copy(update={"archived": task.archived_at is not None})
-
-
 def get_calendar_activity(
     db: Session, user_id: str, start: date, end: date, tz: ZoneInfo, include_archived: bool = False
 ) -> CalendarActivity:
     """Everything the user planned or did across local days start..end inclusive:
     tasks due in the range, tasks completed in it, note editing sessions and
     habit completions. Deleted tasks, notes and habits are left out, and so are
-    archived ones unless `include_archived` is set; each item says whether it
-    (or its note or habit) is archived.
+    archived ones unless `include_archived` is set.
 
     Due dates and habit log dates are already local calendar dates. Completion
     and session timestamps are UTC, so they are matched against the UTC
@@ -69,7 +64,7 @@ def get_calendar_activity(
     )
 
     session_query = (
-        db.query(NoteSessionModel, NoteModel.title, NoteModel.archived_at)
+        db.query(NoteSessionModel, NoteModel.title)
         .join(NoteModel, NoteModel.id == NoteSessionModel.note_id)
         .filter(
             NoteSessionModel.user_id == user_id,
@@ -86,7 +81,7 @@ def get_calendar_activity(
     session_rows = session_query.order_by(NoteSessionModel.started_at, NoteSessionModel.id).all()
 
     habit_query = (
-        db.query(HabitLog.logged_date, Habit.id, Habit.title, Habit.estimated_time, Habit.archived_at)
+        db.query(HabitLog.logged_date, Habit.id, Habit.title, Habit.estimated_time)
         .join(Habit, Habit.id == HabitLog.habit_id)
         .filter(
             Habit.user_id == user_id,
@@ -102,8 +97,8 @@ def get_calendar_activity(
     return CalendarActivity(
         start_date=start,
         end_date=end,
-        scheduled_tasks=[_activity_task(t) for t in scheduled_tasks],
-        completed_tasks=[_activity_task(t) for t in completed_tasks],
+        scheduled_tasks=[ActivityTask.model_validate(t) for t in scheduled_tasks],
+        completed_tasks=[ActivityTask.model_validate(t) for t in completed_tasks],
         note_sessions=[
             ActivityNoteSession(
                 id=s.id,
@@ -112,18 +107,11 @@ def get_calendar_activity(
                 started_at=s.started_at,
                 ended_at=s.ended_at,
                 duration_seconds=int((s.ended_at - s.started_at).total_seconds()),
-                archived=archived_at is not None,
             )
-            for s, title, archived_at in session_rows
+            for s, title in session_rows
         ],
         habit_completions=[
-            ActivityHabitCompletion(
-                habit_id=habit_id,
-                habit_title=title,
-                date=logged,
-                estimated_time=hours,
-                archived=archived_at is not None,
-            )
-            for logged, habit_id, title, hours, archived_at in habit_rows
+            ActivityHabitCompletion(habit_id=habit_id, habit_title=title, date=logged, estimated_time=hours)
+            for logged, habit_id, title, hours in habit_rows
         ],
     )

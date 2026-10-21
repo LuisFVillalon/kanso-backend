@@ -285,28 +285,28 @@ def test_include_archived_adds_archived_items_but_never_trashed_ones(client, db)
     for path in (f"/del-task/{trashed_task.id}", f"/del-note/{trashed_note.id}", f"/del-habit/{trashed_habit.id}"):
         assert client.delete(path).status_code == 200
 
-    def flags(activity):
+    def titles(activity):
         return {
-            "scheduled": [(t["title"], t["archived"]) for t in activity["scheduled_tasks"]],
-            "completed": [(t["title"], t["archived"]) for t in activity["completed_tasks"]],
-            "sessions": [(s["note_title"], s["archived"]) for s in activity["note_sessions"]],
-            "habits": [(c["habit_title"], c["archived"]) for c in activity["habit_completions"]],
+            "scheduled": [t["title"] for t in activity["scheduled_tasks"]],
+            "completed": [t["title"] for t in activity["completed_tasks"]],
+            "sessions": [s["note_title"] for s in activity["note_sessions"]],
+            "habits": [c["habit_title"] for c in activity["habit_completions"]],
         }
 
-    default = flags(_activity(client))
-    assert default == flags(_activity(client, include_archived="false"))
+    default = titles(_activity(client))
+    assert default == titles(_activity(client, include_archived="false"))
     assert default == {
-        "scheduled": [("Active", False)],
+        "scheduled": ["Active"],
         "completed": [],
-        "sessions": [("Active note", False)],
-        "habits": [("Active habit", False)],
+        "sessions": ["Active note"],
+        "habits": ["Active habit"],
     }
 
-    assert flags(_activity(client, include_archived="true")) == {
-        "scheduled": [("Active", False), ("Archived", True)],
-        "completed": [("Archived", True)],
-        "sessions": [("Active note", False), ("Archived note", True)],
-        "habits": [("Active habit", False), ("Archived habit", True)],
+    assert titles(_activity(client, include_archived="true")) == {
+        "scheduled": ["Active", "Archived"],
+        "completed": ["Archived"],
+        "sessions": ["Active note", "Archived note"],
+        "habits": ["Active habit", "Archived habit"],
     }
     assert _activity(client, include_archived="true")["completed_tasks"][0]["id"] == archived_task.id
 
@@ -315,6 +315,6 @@ def test_include_archived_adds_archived_items_but_never_trashed_ones(client, db)
     _task(db, "Subtask", WEEK_END, parent_task_id=parent.id)
     db.commit()
     assert client.patch(f"/archive-task/{parent.id}").status_code == 200
-    scheduled = flags(_activity(client, include_archived="true"))["scheduled"]
-    assert scheduled[-2:] == [("Parent", True), ("Subtask", True)]
-    assert flags(_activity(client))["scheduled"] == [("Active", False)]
+    scheduled = titles(_activity(client, include_archived="true"))["scheduled"]
+    assert scheduled[-2:] == ["Parent", "Subtask"]
+    assert titles(_activity(client))["scheduled"] == ["Active"]
