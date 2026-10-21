@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.schemas.limits import SHORT_MAX, TAGS_PER_ITEM_MAX, TEXT_MAX, TITLE_MAX
+from app.schemas.limits import REMINDER_MINUTES_MAX, SHORT_MAX, TAGS_PER_ITEM_MAX, TEXT_MAX, TITLE_MAX
 from app.schemas.tag_schema import TagCreate, VisibleTags
 
 
@@ -21,6 +21,9 @@ class TaskBase(BaseModel):
 
     estimated_time: float | None = None
     parent_task_id: int | None = None
+    # Minutes before the due time to send the reminder; null uses the user's
+    # default from the notification preferences.
+    reminder_minutes: int | None = None
 
     tags: list[TagCreate] = []
 
@@ -58,6 +61,7 @@ class TaskCreate(TaskBase):
     title: str = Field(max_length=TITLE_MAX)
     description: str | None = Field(None, max_length=TEXT_MAX)
     category: str | None = Field(None, max_length=SHORT_MAX)
+    reminder_minutes: int | None = Field(None, ge=1, le=REMINDER_MINUTES_MAX)
     tags: list[TagCreate] = Field([], max_length=TAGS_PER_ITEM_MAX)
 
 

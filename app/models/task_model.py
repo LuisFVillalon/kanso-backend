@@ -38,6 +38,9 @@ class Task(Base):
     completed_date = Column(DateTime, nullable=True)
     estimated_time = Column(Numeric(precision=10, scale=2), nullable=True)
     parent_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
+    # Minutes before the due time to send the reminder notification; NULL
+    # means the user's default (see notification_crud).
+    reminder_minutes = Column(Integer, nullable=True)
     user_id = Column(String(36), nullable=True, index=True)
     # Set when the task is archived; NULL means active.
     archived_at = Column(DateTime(timezone=True), nullable=True)

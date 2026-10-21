@@ -28,6 +28,7 @@ from app.models import (  # ensure every model is visible to autogenerate
     note_model,
     note_session_model,
     note_tag_model,
+    notification_model,
     profile_model,
     tag_model,
     task_model,

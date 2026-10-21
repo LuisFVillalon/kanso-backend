@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.crud.notification_crud import prune_states
 from app.crud.trash_crud import purge_expired
 from app.database.database import SessionLocal, check_db_connection
 from app.routers import (
@@ -16,6 +17,7 @@ from app.routers import (
     drawing_router,
     habits_router,
     notes_router,
+    notifications_router,
     profile_router,
     tags_router,
     tasks_router,
@@ -54,20 +56,21 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         warnings.warn(f"Startup DB check failed (app will still start): {exc}", stacklevel=1)
 
-    # Remove trash past retention even for users who never come back.
+    # Remove trash and notification state past retention even for users who never come back.
     try:
         with SessionLocal() as db:
             purge_expired(db)
+            prune_states(db)
             db.commit()
     except Exception as exc:
-        warnings.warn(f"Startup trash purge failed (app will still start): {exc}", stacklevel=1)
+        warnings.warn(f"Startup purge failed (app will still start): {exc}", stacklevel=1)
 
     yield
 
 
 app = FastAPI(
     title="kanso API",
-    description="Tasks, notes, habits and daily-debrief API behind the kanso web app.",
+    description="Tasks, notes, habits, notifications and daily-debrief API behind the kanso web app.",
     lifespan=lifespan,
 )
 
@@ -90,6 +93,7 @@ app.include_router(drawing_router.router)
 app.include_router(debrief_router.router)
 app.include_router(demo_router.router)
 app.include_router(trash_router.router)
+app.include_router(notifications_router.router)
 
 
 @app.get("/", include_in_schema=False)

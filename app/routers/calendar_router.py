@@ -1,11 +1,10 @@
 from datetime import date
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
-from app.core.http_utils import require_found
+from app.core.http_utils import require_found, require_time_zone
 from app.crud.activity_crud import get_calendar_activity
 from app.crud.calendar_crud import get_calendar_settings, upsert_calendar_settings
 from app.database.database import get_db
@@ -60,10 +59,4 @@ def read_calendar_activity(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"The range may span at most {ACTIVITY_RANGE_MAX_DAYS} days.",
         )
-    try:
-        zone = ZoneInfo(tz)
-    except (ZoneInfoNotFoundError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Unknown time zone: {tz!r}."
-        ) from None
-    return get_calendar_activity(db, current_user.id, start_date, end_date, zone)
+    return get_calendar_activity(db, current_user.id, start_date, end_date, require_time_zone(tz))

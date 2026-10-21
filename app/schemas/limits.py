@@ -14,3 +14,7 @@ COLOR_MAX = 32
 TAGS_PER_ITEM_MAX = 50
 NOTE_CONTENT_MAX = 10_000_000
 DRAWING_DATA_URL_MAX = 5_000_000
+# Reminder lead times, in minutes before a task is due.
+REMINDER_MINUTES_MAX = 7 * 24 * 60
+# Notification ids per mark-read or dismiss request.
+NOTIFICATION_IDS_MAX = 200
