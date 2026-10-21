@@ -330,6 +330,20 @@ def _bring_back(db: Session, tasks: list[TaskModel], field: str, user_id: str) -
             t.priority = None
 
 
+def _keeps_parent_on_restore(db: Session, task: TaskModel, user_id: str) -> bool:
+    """True if a trashed task can come back under its old parent without going two levels deep.
+
+    That holds when the parent was deleted along with it (the tree comes back
+    as it was), or is still restorable and has no parent of its own.
+    """
+    parent = get_owned(db, TaskModel, task.parent_task_id, user_id) or get_owned(
+        db, TaskModel, task.parent_task_id, user_id, trashed=True
+    )
+    if not parent:
+        return False
+    return parent.deleted_at == task.deleted_at or parent.parent_task_id is None
+
+
 def restore_task(db: Session, task_id: int, user_id: str):
     """Restore a task from the trash with the subtasks deleted along with it. Returns None if not in the trash.
 
@@ -337,11 +351,15 @@ def restore_task(db: Session, task_id: int, user_id: str):
     stay in the trash; deleted ancestors are restored too (not their other
     subtasks), so the task never comes back under a hidden parent; and a
     priority taken in the meantime is dropped. A task deleted while archived
-    is restored to the archive.
+    is restored to the archive. A task whose old parent is gone, or has since
+    become a linked task itself, comes back on its own instead.
     """
     task = get_trashed(db, TaskModel, task_id, user_id)
     if not task:
         return None
+    if task.parent_task_id is not None and not _keeps_parent_on_restore(db, task, user_id):
+        task.parent_task_id = None
+        task.position = None
     stamp = task.deleted_at
     restored = [
         *_hidden_ancestors(db, task, user_id, "deleted_at"),
@@ -378,6 +396,8 @@ def set_linked_tasks(db: Session, task_id: int, children: list[LinkedTaskRef], u
     created with the parent's tags and no due date or priority; each gets its
     index as its position. Active linked tasks left out are unlinked, not
     deleted. Archived ones stay linked, since the client never sees them.
+    Only new links are checked against the rules, so links already under this
+    task re-save even in trees deeper than the one-level rule.
     """
     parent = get_owned(db, TaskModel, task_id, user_id)
     if not parent:
@@ -406,7 +426,8 @@ def set_linked_tasks(db: Session, task_id: int, children: list[LinkedTaskRef], u
                 raise HTTPException(
                     status_code=400, detail=f"Task {ref.id} is archived; restore it before linking it"
                 )
-            _validate_link(db, parent, child.id, user_id)
+            if child.parent_task_id != parent.id:
+                _validate_link(db, parent, child.id, user_id)
         child.parent_task_id = parent.id
         child.position = position
         linked.append(child)

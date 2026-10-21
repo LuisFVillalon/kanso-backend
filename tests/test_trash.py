@@ -412,6 +412,36 @@ def test_restoring_a_subtask_restores_its_deleted_ancestors_only(client, db):
     assert [i["id"] for i in _trash(client)] == [sibling["id"]]
 
 
+def test_restoring_a_subtask_whose_parent_was_linked_meanwhile_restores_it_on_its_own(client):
+    parent = _create(client, "task", title="Parent")
+    child = _create(client, "task", title="Child", parent_task_id=parent["id"])
+    other = _create(client, "task", title="Other")
+
+    _delete(client, "task", child["id"])
+    resp = client.put(f"/update-linked-tasks/{other['id']}", json={"children": [{"id": parent["id"]}]})
+    assert resp.status_code == 200, resp.text
+    restored = client.patch(f"/restore-task/{child['id']}").json()
+
+    assert (restored["parent_task_id"], restored["position"]) == (None, None)
+    tasks = {t["id"]: t for t in client.get("/get-tasks").json()}
+    assert tasks[parent["id"]]["parent_task_id"] == other["id"]
+
+
+def test_restoring_a_subtask_leaves_a_parent_deleted_after_relinking_in_the_trash(client):
+    parent = _create(client, "task", title="Parent")
+    child = _create(client, "task", title="Child", parent_task_id=parent["id"])
+    other = _create(client, "task", title="Other")
+
+    _delete(client, "task", child["id"])
+    client.put(f"/update-task/{parent['id']}", json={"title": "Parent", "parent_task_id": other["id"]})
+    _delete(client, "task", parent["id"])
+    restored = client.patch(f"/restore-task/{child['id']}").json()
+
+    assert restored["parent_task_id"] is None
+    assert _ids(client.get("/get-tasks")) == {child["id"], other["id"]}
+    assert [i["id"] for i in _trash(client)] == [parent["id"]]
+
+
 def test_purging_a_task_takes_the_subtasks_deleted_with_it(client, db):
     parent = _create(client, "task", title="Parent")
     deleted_first = _create(client, "task", title="Dropped step", parent_task_id=parent["id"])

@@ -251,6 +251,31 @@ def test_loops_through_deeper_legacy_trees_are_rejected(client, db):
     assert "loop" in resp.json()["detail"]
 
 
+def test_resaving_a_legacy_middle_task_keeps_its_links(client, db):
+    root = _create(client, title="Root")
+    middle = _create(client, title="Middle", parent_task_id=root["id"])
+    leaf, other = _create(client, title="Leaf"), _create(client, title="Other")
+    _link_directly(db, leaf["id"], middle["id"])
+
+    body = _linked(client, middle["id"], [{"id": leaf["id"]}])
+    assert [c["id"] for c in body["children"]] == [leaf["id"]]
+    assert _set_linked(client, middle["id"], [{"id": leaf["id"]}, {"id": other["id"]}]).status_code == 400
+    assert _set_linked(client, middle["id"], [{"id": leaf["id"]}, {"title": "New"}]).status_code == 400
+
+
+def test_resaving_a_parent_whose_linked_task_has_its_own_keeps_it(client, db):
+    root = _create(client, title="Root")
+    middle = _create(client, title="Middle", parent_task_id=root["id"])
+    leaf = _create(client, title="Leaf")
+    _link_directly(db, leaf["id"], middle["id"])
+    nested = _create(client, title="Nested")
+    _create(client, title="Nested step", parent_task_id=nested["id"])
+
+    body = _linked(client, root["id"], [{"title": "New"}, {"id": middle["id"]}])
+    assert [c["title"] for c in body["children"]] == ["New", "Middle"]
+    assert _set_linked(client, root["id"], [{"id": middle["id"]}, {"id": nested["id"]}]).status_code == 400
+
+
 def test_archived_parents_cannot_take_linked_tasks(client):
     parent = _create(client, title="Parent")
     client.patch(f"/archive-task/{parent['id']}")
