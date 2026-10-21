@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
 from app.crud.task_crud import (
+    LinkedMode,
     archive_task,
     create_task,
     delete_task,
@@ -19,6 +20,12 @@ from app.database.database import get_db
 from app.schemas.task_schema import LinkedTasks, LinkedTasksUpdate, Task, TaskCreate
 
 router = APIRouter()
+
+_LINKED_QUERY = Query(
+    "cascade",
+    description="What happens to the task's linked tasks: 'cascade' (the default) applies the same action to them, "
+    "'keep' unlinks them first so they stay as standalone tasks.",
+)
 
 
 @router.get("/get-tasks", response_model=list[Task])
@@ -44,21 +51,23 @@ def create_new_task(
 @router.delete("/del-task/{task_id}", response_model=Task)
 def delete_task_by_id(
     task_id: int,
+    linked: LinkedMode = _LINKED_QUERY,
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Move a task and its subtasks to the trash, where it can be restored for 30 days."""
-    return require_found(delete_task(db, task_id, current_user.id), "Task not found")
+    """Move a task to the trash, where it can be restored for 30 days, with its subtasks unless ?linked=keep."""
+    return require_found(delete_task(db, task_id, current_user.id, linked), "Task not found")
 
 
 @router.patch("/update-task-status/{task_id}", response_model=Task)
 def update_complete_status_by_id(
     task_id: int,
+    with_linked: bool = Query(False, description="When completing the task, also complete its open linked tasks."),
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Toggle the completion status of a task."""
-    return require_found(update_task_status(db, task_id, current_user.id), "Task not found")
+    """Toggle the completion status of a task, and with ?with_linked=true complete its open linked tasks too."""
+    return require_found(update_task_status(db, task_id, current_user.id, with_linked), "Task not found")
 
 
 @router.put("/update-task/{task_id}", response_model=Task)
@@ -87,11 +96,12 @@ def update_linked_tasks_by_id(
 @router.patch("/archive-task/{task_id}", response_model=Task)
 def archive_task_by_id(
     task_id: int,
+    linked: LinkedMode = _LINKED_QUERY,
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Archive a task along with its subtasks."""
-    return require_found(archive_task(db, task_id, current_user.id), "Task not found")
+    """Archive a task, along with its subtasks unless ?linked=keep."""
+    return require_found(archive_task(db, task_id, current_user.id, linked), "Task not found")
 
 
 @router.patch("/unarchive-task/{task_id}", response_model=Task)

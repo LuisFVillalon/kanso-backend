@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import HTTPException
 from sqlalchemy import func
@@ -155,15 +156,40 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
     return db_task
 
 
-def delete_task(db: Session, task_id: int, user_id: str):
-    """Move a task and its subtasks to the trash. Returns None if not found.
+LinkedMode = Literal["keep", "cascade"]
+
+
+def _unlink_children(db: Session, task: TaskModel, user_id: str, archived: bool | None = None) -> None:
+    """Make the task's live linked tasks standalone, or only the archived/active ones when archived is set.
+
+    Only direct children are unlinked; anything below them stays with them.
+    """
+    q = db.query(TaskModel).filter(
+        TaskModel.parent_task_id == task.id,
+        TaskModel.user_id == user_id,
+        deleted_filter(TaskModel, False),
+    )
+    if archived is not None:
+        q = q.filter(archived_filter(TaskModel, archived))
+    for child in q.all():
+        child.parent_task_id = None
+        child.position = None
+    db.flush()
+
+
+def delete_task(db: Session, task_id: int, user_id: str, linked: LinkedMode = "cascade"):
+    """Move a task to the trash, with its subtasks unless linked="keep". Returns None if not found.
 
     The subtasks get the parent's deleted_at, which is how restore_task and
-    purge_task tell them apart from subtasks deleted on their own.
+    purge_task tell them apart from subtasks deleted on their own. With
+    linked="keep" its linked tasks, archived ones included, are unlinked
+    first and stay as standalone tasks.
     """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:
         return None
+    if linked == "keep":
+        _unlink_children(db, task, user_id)
     stamp = datetime.now(UTC)
     for t in [task, *_descendants(db, task, user_id)]:
         t.deleted_at = stamp
@@ -173,13 +199,33 @@ def delete_task(db: Session, task_id: int, user_id: str):
     return task
 
 
-def update_task_status(db: Session, task_id: int, user_id: str):
-    """Toggle a task's completed status and update completed_date accordingly."""
+def update_task_status(db: Session, task_id: int, user_id: str, with_linked: bool = False):
+    """Toggle a task's completed status and update completed_date accordingly.
+
+    With with_linked=True, completing a task also completes its open, active
+    linked tasks in the same transaction. Reopening a task leaves them as they are.
+    """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:
         return None
+    now = datetime.now(UTC)
     task.completed = not task.completed
-    task.completed_date = datetime.now(UTC) if task.completed else None
+    task.completed_date = now if task.completed else None
+    if with_linked and task.completed:
+        open_children = (
+            db.query(TaskModel)
+            .filter(
+                TaskModel.parent_task_id == task.id,
+                TaskModel.user_id == user_id,
+                TaskModel.completed.is_not(True),
+                deleted_filter(TaskModel, False),
+                archived_filter(TaskModel, False),
+            )
+            .all()
+        )
+        for child in open_children:
+            child.completed = True
+            child.completed_date = now
     db.commit()
     db.refresh(task)
     return task
@@ -273,16 +319,20 @@ def _hidden_ancestors(db: Session, task: TaskModel, user_id: str, field: str) ->
     return found
 
 
-def archive_task(db: Session, task_id: int, user_id: str):
-    """Archive a task and its active subtasks. Returns None if not found.
+def archive_task(db: Session, task_id: int, user_id: str, linked: LinkedMode = "cascade"):
+    """Archive a task, with its active subtasks unless linked="keep". Returns None if not found.
 
     The subtasks get the parent's archived_at, which is how unarchive_task
-    tells them apart from subtasks archived on their own. Idempotent: an
-    already-archived task keeps its original archived_at.
+    tells them apart from subtasks archived on their own. With linked="keep"
+    its active linked tasks are unlinked first and stay as standalone tasks;
+    ones archived on their own stay linked. Idempotent: an already-archived
+    task keeps its original archived_at.
     """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:
         return None
+    if linked == "keep":
+        _unlink_children(db, task, user_id, archived=False)
     stamp = task.archived_at or datetime.now(UTC)
     for t in [task, *_descendants(db, task, user_id)]:
         if t.archived_at is None:
