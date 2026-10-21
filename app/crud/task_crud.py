@@ -76,6 +76,7 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
         completed_date=now if task.completed else None,
         estimated_time=task.estimated_time,
         parent_task_id=task.parent_task_id,
+        reminder_minutes=task.reminder_minutes,
         user_id=user_id,
     )
     set_item_tags(db, db_task, task.tags, user_id)
@@ -117,7 +118,7 @@ def update_task_status(db: Session, task_id: int, user_id: str):
 
 _TASK_UPDATE_FIELDS = (
     "title", "description", "category", "completed", "due_date",
-    "due_time", "estimated_time", "parent_task_id",
+    "due_time", "estimated_time", "parent_task_id", "reminder_minutes",
 )
 
 

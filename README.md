@@ -5,7 +5,7 @@ The API behind [kanso](https://kanso-web-app.vercel.app), a productivity app for
 | Repository | Role |
 |---|---|
 | [kanso-frontend](https://github.com/LuisFVillalon/kanso-frontend) | Next.js web app (start here for the full architecture) |
-| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, profile, daily debrief, demo sandboxes |
+| **kanso-backend** (this repo) | Data API: tasks, tags, notes, habits, profile, daily debrief, notifications, demo sandboxes |
 | [kanso-ai](https://github.com/LuisFVillalon/kanso-ai) | LLM-backed learning-resource recommendations |
 
 Interactive API reference: `/docs` on any running instance.
@@ -32,7 +32,7 @@ erDiagram
     TASKS ||--o{ TASKS : "parent / subtasks"
 ```
 
-Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker) and `drawings` (the doodle canvas). Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
+Every table also carries `user_id`. The single-row-per-user tables are `profiles` (display name and synced UI preferences), `calendar_settings` (the term tracker), `drawings` (the doodle canvas) and `notification_preferences`; `notification_states` holds read and dismissed state per notification. Join tables and child rows cascade on delete, so removing an account is one pass over `crud/account_crud.py:USER_OWNED_MODELS`.
 
 ## Project structure
 
@@ -65,6 +65,7 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 | Trash | `GET /get-trash` |
 | Daily debrief | `GET /daily-debrief?local_date=&local_time=` |
 | Calendar activity | `GET /get-calendar-activity?start_date=&end_date=&tz=` |
+| Notifications | `GET /get-notifications?tz=` · `POST /mark-notifications-read` · `POST /mark-all-notifications-read?tz=` · `POST /dismiss-notifications` · `GET /get-notification-preferences` · `PATCH /update-notification-preferences` |
 | Profile & settings | `GET /get-profile` · `POST /save-profile` · `GET /get-calendar-settings` · `PATCH /update-calendar-settings` |
 | Doodle canvas | `GET /get-drawing` · `POST /save-drawing` · `DELETE /delete-drawing` |
 | Account | `POST /update-password` (email accounts only) · `DELETE /delete-account` |
@@ -75,6 +76,20 @@ All endpoints require `Authorization: Bearer <supabase-jwt>`.
 **Trash.** The `del-*` endpoints move a task, note, tag or habit to the trash by setting its `deleted_at` instead of removing the row, and work on archived rows too. A deleted item is gone from every list, lookup, count and the debrief, but its tag links, habit logs and note sessions are kept: `PATCH /restore-{kind}/{id}` brings it back intact (into the archive, if it was archived). Deleting a task also deletes its subtasks; restoring it restores the subtasks deleted with it plus any deleted parents above it. A deleted tag is hidden from the `tags` lists of the items carrying it until restored, and naming it on a task, note or habit restores it. `GET /get-trash` lists deleted items newest first, each with its `purge_at`, 30 days after deletion. `DELETE /purge-{kind}/{id}` deletes one for good right away. Items deleted more than 30 days ago are treated as gone everywhere, the trash and restore included, and are permanently deleted, for every user at once, when the app starts and whenever anyone opens the trash, restores or purges from it, or deletes something (`crud/trash_crud.py`), so no scheduler is needed.
 
 **Calendar activity.** `GET /get-calendar-activity` returns what the user planned and did across a range of their local days (up to 366): tasks due in the range, tasks completed in it (by `completed_date`, set when a task is marked complete and cleared when it's reopened), closed note editing sessions that overlap it, and habit completions. It backs the calendar's week view and its weekly, monthly and yearly reports. Completion and session timestamps come back in UTC with a `Z` suffix; `tz`, the caller's IANA time zone (e.g. `America/Los_Angeles`, from `Intl.DateTimeFormat().resolvedOptions().timeZone`), matches them against the caller's local days, correctly across DST changes; an unknown zone is a 422. Archived and deleted tasks, notes and habits are left out, and tasks completed before completion times were recorded have no `completed_date`, so they don't appear as completions.
+
+**Notifications.** In-app alerts, computed on demand from tasks, habits and the profile each time `GET /get-notifications?tz=` is called, so there is no scheduler. `tz` is the caller's IANA time zone, as for calendar activity; due times, the profile's "Day starts at" (`day_start_time`, default 08:00) and "Call it a day" (`shutoff_time`, default 22:00) and quiet hours are local times in it, and every alert time follows DST. Five types exist:
+
+| Type | Fires | Lapses |
+|---|---|---|
+| `due_today` | At the day start, listing the open tasks due today | At midnight |
+| `task_reminder` | `reminder_minutes` before a task's due time (the task's own, else the user's default, 120) | When the final warning fires |
+| `final_warning` | 30 minutes before a task's due time | When the task is due |
+| `overdue` | Once, when a task's due time passes; for a task with only a due date, at the next day start | Never (for 30 days) |
+| `habit_reminder` | An hour before "Call it a day" while any of the day's habits isn't logged; not on rest days | At midnight |
+
+Only open tasks with a `due_date` count, and reminders and final warnings also need a `due_time`; a lead of 30 minutes or less sends only the final warning. Completed, archived and deleted tasks and archived and deleted habits are left out. Each notification has `id`, `type`, `title`, `body`, `fire_at` (UTC, `Z` suffix), the `task_ids` or `habit_ids` it is about, and `read`; the list is newest first. Ids are deterministic, `{type}:{subject}:{occurrence}` (e.g. `overdue:task-12:2026-10-20T16:00` or `due_today:tasks:2026-10-20`), so read and dismissed state, stored per id, holds across reloads and devices; moving a task's due time makes a new occurrence. `POST /mark-notifications-read` and `POST /dismiss-notifications` take `{"ids": [...]}` (up to 200); `POST /mark-all-notifications-read?tz=` marks everything currently listed. Dismissed notifications are left out of the list. Occurrences older than 30 days are no longer listed, and their state rows are deleted, for every user, at startup and whenever anyone marks or dismisses notifications.
+
+`GET /get-notification-preferences` returns `types` (every type, `true` unless switched off), `quiet_hours_start`/`quiet_hours_end` (`"HH:MM"` or `null`) and `default_reminder_minutes`. `PATCH /update-notification-preferences` changes only the fields given: `types` merges, quiet hours are set as a pair (they may run past midnight, e.g. 22:00 to 07:00) and cleared with two `null`s, and a `null` `default_reminder_minutes` restores 120. An alert that fires during quiet hours is delivered when they end, with its `fire_at` moved to then, and is dropped if it would already have lapsed. Tasks take an optional `reminder_minutes` (1 to 10080) on create and update; `null` uses the default.
 
 `GET /health` is public and used by Fly.io health checks.
 
