@@ -124,7 +124,8 @@ class MoodCheckinSettings(BaseModel):
     daily: bool = True
     weekly: bool = False
     monthly: bool = False
-    # Nudge at "Call it a day", 30 minutes after it, or not at all.
+    # Nudge at "Call it a day", 30 minutes after it, or not at all; "off" also
+    # silences the mood_reminder and mood_missed notifications.
     remind: MoodRemind = "shutoff"
     show_in_reports: bool = True
 
