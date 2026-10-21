@@ -6,8 +6,14 @@ token, which is decrypted per request and never sent to the browser. The
 school's address comes from the user, so it is treated as untrusted input
 (SSRF): it must be an https URL on a public DNS name, with no IP literals,
 non-default ports or credentials, and every address the name resolves to
-must be public. Redirects are never followed, so a Canvas host can't bounce
-a request (and the token) somewhere else.
+must be public. The name is resolved once per client, and every request
+goes to an address that passed that check, with TLS still verified and SNI
+and Host still naming the school's host; nothing is re-resolved in between,
+so a DNS answer that changes to a private address after the check (DNS
+rebinding) is never connected to. Redirects are never followed, so a Canvas
+host can't bounce a request (and the token) somewhere else. A response
+larger than MAX_RESPONSE_BYTES, or slower in total than DEADLINE, is
+abandoned, so a hostile host can't exhaust memory or hold a worker.
 
 The token is only ever placed in the Authorization header. Nothing here logs
 it, and no error message includes it; httpx's own logging records the URL
@@ -22,14 +28,19 @@ Errors map to typed exceptions whose `code` the API returns as its detail:
 """
 
 import ipaddress
+import json
 import re
 import socket
+import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
 import httpx
 
+# Per connect/read; DEADLINE bounds the whole request, body included.
 TIMEOUT = httpx.Timeout(10.0)
+DEADLINE = 20.0
+MAX_RESPONSE_BYTES = 5_000_000
 _HOST = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)+")
 _SCHEME = re.compile(r"[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 
@@ -108,7 +119,8 @@ def _resolve(host: str) -> list[str]:
     return [info[4][0] for info in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)]
 
 
-def _check_public_host(host: str) -> None:
+def _public_addresses(host: str) -> list[str]:
+    """Resolve host once and return its addresses, refusing it if any is not public."""
     try:
         addresses = _resolve(host)
     except OSError:
@@ -118,6 +130,7 @@ def _check_public_host(host: str) -> None:
     for address in addresses:
         if not ipaddress.ip_address(address.split("%", 1)[0]).is_global:
             raise CanvasUrlInvalid("That address points to a private network.")
+    return addresses
 
 
 class CanvasClient:
@@ -125,29 +138,49 @@ class CanvasClient:
 
     def __init__(self, base_url: str, token: str):
         self.base_url = normalize_base_url(base_url)
+        self._host = urlsplit(self.base_url).hostname
         self._token = token
-        self._host_checked = False
+        # The checked addresses, resolved on the first request and reused for
+        # every later one.
+        self._addresses: list[str] | None = None
 
     def __repr__(self) -> str:
         return f"CanvasClient({self.base_url!r})"
 
     def get(self, path: str, params: dict | None = None):
         """GET /api/v1{path} and return the decoded JSON body."""
-        if not self._host_checked:
-            _check_public_host(urlsplit(self.base_url).hostname)
-            self._host_checked = True
+        if self._addresses is None:
+            self._addresses = _public_addresses(self._host)
+        url = httpx.URL(f"{self.base_url}/api/v1{path}", params=params)
+        headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/json", "Host": self._host}
+        deadline = time.monotonic() + DEADLINE
         try:
             with httpx.Client(timeout=TIMEOUT, follow_redirects=False, transport=transport) as client:
-                response = client.get(
-                    f"{self.base_url}/api/v1{path}",
-                    params=params,
-                    headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"},
-                )
+                for i, address in enumerate(self._addresses):
+                    if time.monotonic() > deadline:
+                        raise CanvasUnavailable("Canvas took too long to answer.")
+                    try:
+                        return self._fetch(client, url.copy_with(host=address), headers, deadline)
+                    except httpx.ConnectError:
+                        if i == len(self._addresses) - 1:
+                            raise
         except httpx.TimeoutException:
             raise CanvasUnavailable("Canvas took too long to answer.") from None
         except httpx.HTTPError:
             raise CanvasUnavailable("Canvas couldn't be reached.") from None
-        return _decode(response)
+
+    def _fetch(self, client: httpx.Client, url: httpx.URL, headers: dict, deadline: float):
+        # The URL names the checked address; sni_hostname keeps TLS (SNI and
+        # certificate verification) on the school's host name.
+        with client.stream("GET", url, headers=headers, extensions={"sni_hostname": self._host}) as response:
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                body += chunk
+                if len(body) > MAX_RESPONSE_BYTES:
+                    raise CanvasNotCanvas("The host's answer was too large.")
+                if time.monotonic() > deadline:
+                    raise CanvasUnavailable("Canvas took too long to answer.")
+            return _decode(response.status_code, bytes(body))
 
     def get_self(self) -> dict:
         """The token owner's Canvas account: {"id": int, "name": str}."""
@@ -182,26 +215,24 @@ class CanvasClient:
             return None
 
 
-def _is_rate_limited(response: httpx.Response) -> bool:
+def _is_rate_limited(status_code: int, body: bytes) -> bool:
     # Current Canvas throttles with 429; older versions sent 403 with this text.
-    return response.status_code == 429 or (
-        response.status_code == 403 and "rate limit exceeded" in response.text.lower()
-    )
+    return status_code == 429 or (status_code == 403 and b"rate limit exceeded" in body.lower())
 
 
-def _decode(response: httpx.Response):
-    if response.status_code == 401:
+def _decode(status_code: int, body: bytes):
+    if status_code == 401:
         raise CanvasTokenInvalid("Canvas rejected the access token.")
-    if _is_rate_limited(response):
+    if _is_rate_limited(status_code, body):
         raise CanvasUnavailable("Canvas is rate-limiting requests.")
-    if response.status_code == 403:
+    if status_code == 403:
         raise CanvasForbidden("Canvas refused the request.")
-    if response.status_code >= 500:
-        raise CanvasUnavailable(f"Canvas answered {response.status_code}.")
-    if response.status_code != 200:
+    if status_code >= 500:
+        raise CanvasUnavailable(f"Canvas answered {status_code}.")
+    if status_code != 200:
         # Redirects (often a login page), 404s and other refusals: not a Canvas API.
-        raise CanvasNotCanvas(f"The host answered {response.status_code}.")
+        raise CanvasNotCanvas(f"The host answered {status_code}.")
     try:
-        return response.json()
+        return json.loads(body)
     except ValueError:
         raise CanvasNotCanvas("The host didn't answer with JSON.") from None
