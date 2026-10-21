@@ -38,6 +38,9 @@ class Task(Base):
     completed_date = Column(DateTime, nullable=True)
     estimated_time = Column(Numeric(precision=10, scale=2), nullable=True)
     parent_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
+    # Order among the parent's linked tasks, listed by (position, id); NULL
+    # for top-level tasks and for subtasks linked before ordering existed.
+    position = Column(Integer, nullable=True)
     # Minutes before the due time to send the reminder notification; NULL
     # means the user's default (see notification_crud).
     reminder_minutes = Column(Integer, nullable=True)

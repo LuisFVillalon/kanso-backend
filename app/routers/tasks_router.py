@@ -10,12 +10,13 @@ from app.crud.task_crud import (
     get_tasks,
     purge_task,
     restore_task,
+    set_linked_tasks,
     unarchive_task,
     update_task,
     update_task_status,
 )
 from app.database.database import get_db
-from app.schemas.task_schema import Task, TaskCreate
+from app.schemas.task_schema import LinkedTasks, LinkedTasksUpdate, Task, TaskCreate
 
 router = APIRouter()
 
@@ -69,6 +70,18 @@ def update_task_by_id(
 ):
     """Replace all fields of an existing task."""
     return require_found(update_task(db, task_id, payload, current_user.id), "Task not found")
+
+
+@router.put("/update-linked-tasks/{task_id}", response_model=LinkedTasks)
+def update_linked_tasks_by_id(
+    task_id: int,
+    payload: LinkedTasksUpdate,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Save a task's linked tasks in order, in one go: link, reorder, create new ones and unlink the rest."""
+    parent, children = require_found(set_linked_tasks(db, task_id, payload.children, current_user.id), "Task not found")
+    return {"parent": parent, "children": children}
 
 
 @router.patch("/archive-task/{task_id}", response_model=Task)

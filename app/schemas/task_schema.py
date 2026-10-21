@@ -1,9 +1,16 @@
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.limits import REMINDER_MINUTES_MAX, SHORT_MAX, TAGS_PER_ITEM_MAX, TEXT_MAX, TITLE_MAX
+from app.schemas.limits import (
+    LINKED_TASKS_MAX,
+    REMINDER_MINUTES_MAX,
+    SHORT_MAX,
+    TAGS_PER_ITEM_MAX,
+    TEXT_MAX,
+    TITLE_MAX,
+)
 from app.schemas.tag_schema import TagCreate, VisibleTags
 
 
@@ -75,6 +82,37 @@ class Task(TaskBase):
     archived_at: datetime | None = None
     # Set server-side by /del-task and /restore-task; NULL unless in the trash.
     deleted_at: datetime | None = None
+    # Set server-side: order among the parent's linked tasks, listed by
+    # (position, id). NULL for top-level tasks.
+    position: int | None = None
     tags: VisibleTags = []
 
     model_config = {"from_attributes": True}
+
+
+class LinkedTaskRef(BaseModel):
+    """One of a parent's linked tasks: an existing task by id, or a new one by title."""
+
+    id: int | None = None
+    title: str | None = Field(None, max_length=TITLE_MAX)
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, v):
+        return v.strip() if v is not None else v
+
+    @model_validator(mode="after")
+    def id_or_title(self):
+        if (self.id is None) == (not self.title):
+            raise ValueError("Give either the id of an existing task or the title of a new one")
+        return self
+
+
+class LinkedTasksUpdate(BaseModel):
+    # Every active linked task of the parent, in order. Active ones left out are unlinked.
+    children: list[LinkedTaskRef] = Field(max_length=LINKED_TASKS_MAX)
+
+
+class LinkedTasks(BaseModel):
+    parent: Task
+    children: list[Task]
