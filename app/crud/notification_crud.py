@@ -13,6 +13,13 @@ fired by now in the caller's time zone. The alerts are:
   is overdue at the next day's start.
 - habit_reminder: an hour before the profile's "Call it a day" time, while
   any of the day's habits isn't logged. Not on rest days.
+- mood_reminder: mood_reminder_minutes (30 or 60) before "Call it a day",
+  while the day's mood check-in isn't logged. Not on rest days.
+- mood_missed: at the day start, listing the past week's days with no mood
+  check-in, counted from the user's first one. Not on rest days.
+
+Both mood alerts need daily check-ins on in the profile's mood settings, and
+only say that a check-in is due or missing, never what one holds.
 
 Only tasks with a due_date count; reminders and final warnings need a
 due_time too. Completed, archived and deleted tasks and archived and deleted
@@ -40,11 +47,13 @@ from sqlalchemy.orm import Session
 
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
+from app.models.mood_checkin_model import MoodCheckin
 from app.models.notification_model import NotificationPreferences as PreferencesModel
 from app.models.notification_model import NotificationState
 from app.models.profile_model import Profile
 from app.models.task_model import Task as TaskModel
 from app.schemas.limits import REMINDER_MINUTES_MAX
+from app.schemas.mood_schema import resolve_mood_settings
 from app.schemas.notification_schema import (
     NOTIFICATION_TYPES,
     Notification,
@@ -56,6 +65,9 @@ NOTIFICATION_RETENTION = timedelta(days=30)
 DEFAULT_REMINDER_MINUTES = 120
 FINAL_WARNING = timedelta(minutes=30)
 HABIT_REMINDER_LEAD = timedelta(hours=1)
+DEFAULT_MOOD_REMINDER_MINUTES = 60
+# How many days back mood_missed looks for missing check-ins.
+MOOD_MISSED_DAYS = 7
 # The frontend's defaults for a profile without these times set.
 DEFAULT_DAY_START = time(8, 0)
 DEFAULT_SHUTOFF = time(22, 0)
@@ -76,6 +88,7 @@ def _resolve_preferences(row: PreferencesModel | None) -> NotificationPreference
         quiet_hours_start=row.quiet_hours_start if row else None,
         quiet_hours_end=row.quiet_hours_end if row else None,
         default_reminder_minutes=(row.default_reminder_minutes if row else None) or DEFAULT_REMINDER_MINUTES,
+        mood_reminder_minutes=(row.mood_reminder_minutes if row else None) or DEFAULT_MOOD_REMINDER_MINUTES,
     )
 
 
@@ -98,8 +111,9 @@ def update_preferences(db: Session, user_id: str, changes: dict) -> Notification
         # A new dict, so the JSON column registers the change.
         row.types = {**(row.types or {}), **changes["types"]}
     row.quiet_hours_start, row.quiet_hours_end = start, end
-    if "default_reminder_minutes" in changes:
-        row.default_reminder_minutes = changes["default_reminder_minutes"]
+    for column in ("default_reminder_minutes", "mood_reminder_minutes"):
+        if column in changes:
+            setattr(row, column, changes[column])
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -154,6 +168,15 @@ def _hold_for_quiet_hours(fire_at: datetime, quiet: tuple[time, time] | None, tz
     return fire_at
 
 
+def _shutoff_at(day: date, shutoff: time, day_start: time, tz: ZoneInfo) -> datetime:
+    """When `day` is called a day. A "Call it a day" at or before the day start falls after midnight."""
+    return _at(day + timedelta(days=1) if shutoff <= day_start else day, shutoff, tz)
+
+
+def _is_rest_day(day: date, rest_days: list[int]) -> bool:
+    return day.isoweekday() % 7 in rest_days  # 0=Sun..6=Sat, matches Profile.rest_days
+
+
 def _clock(t: time) -> str:
     return f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
 
@@ -190,6 +213,12 @@ def _list_titles(titles: list[str]) -> str:
     return ", ".join(shown) + (f" and {rest} more" if rest else "")
 
 
+def _list_days(days: list[date]) -> str:
+    """"Oct 19", "Oct 19 and Oct 20" or "Oct 18, Oct 19 and Oct 20"."""
+    labels = [f"{day:%b} {day.day}" for day in days]
+    return " and ".join(filter(None, (", ".join(labels[:-1]), labels[-1])))
+
+
 def _count(n: int, noun: str) -> str:
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
@@ -208,6 +237,7 @@ class _Alert:
     render: Callable[[datetime], tuple[str, str]]
     task_ids: list[int] = field(default_factory=list)
     habit_ids: list[int] = field(default_factory=list)
+    dates: list[date] = field(default_factory=list)
 
     @property
     def id(self) -> str:
@@ -305,12 +335,12 @@ def _habit_alerts(
 
     alerts = []
     for day in days:
-        if day.isoweekday() % 7 in rest_days:  # 0=Sun..6=Sat, matches Profile.rest_days
+        if _is_rest_day(day, rest_days):
             continue
         left = [h for h in habits if (h.id, day) not in logged]
         if not left:
             continue
-        shutoff_at = _at(day + timedelta(days=1) if shutoff <= day_start else day, shutoff, tz)
+        shutoff_at = _shutoff_at(day, shutoff, day_start, tz)
         titles = [h.title for h in left]
         alerts.append(_Alert(
             "habit_reminder", "habits", day.isoformat(),
@@ -322,6 +352,61 @@ def _habit_alerts(
             ),
             habit_ids=[h.id for h in left],
         ))
+    return alerts
+
+
+def _mood_alerts(
+    db: Session, user_id: str, today: date, day_start: time, profile: Profile | None, lead: int,
+    enabled: dict, tz: ZoneInfo,
+) -> list[_Alert]:
+    if not resolve_mood_settings(profile.mood_checkins if profile else None).daily:
+        return []
+    shutoff = _parse_hhmm(profile.shutoff_time if profile else None, DEFAULT_SHUTOFF)
+    rest_days = (profile.rest_days if profile else None) or []
+    daily = db.query(MoodCheckin.period_start).filter(
+        MoodCheckin.user_id == user_id, MoodCheckin.period_kind == "day"
+    )
+    logged = {
+        day for (day,) in daily.filter(MoodCheckin.period_start >= today - timedelta(days=MOOD_MISSED_DAYS))
+    }
+
+    alerts = []
+    if enabled["mood_reminder"]:
+        # As for habits, yesterday's reminder can still be live early today.
+        for day in (today - timedelta(days=1), today):
+            if _is_rest_day(day, rest_days) or day in logged:
+                continue
+            shutoff_at = _shutoff_at(day, shutoff, day_start, tz)
+            alerts.append(_Alert(
+                "mood_reminder", "mood", day.isoformat(),
+                fire_at=shutoff_at - timedelta(minutes=lead),
+                expires_at=max(_at(day + timedelta(days=1), time.min, tz), shutoff_at),
+                render=lambda _, shutoff=shutoff: (
+                    "How was your day?",
+                    f"Log your mood check-in before you call it a day at {_clock(shutoff)}.",
+                ),
+                dates=[day],
+            ))
+
+    if enabled["mood_missed"] and not _is_rest_day(today, rest_days):
+        # When daily check-ins were switched on isn't stored, so days count
+        # from the first one the user logged.
+        first = daily.with_entities(func.min(MoodCheckin.period_start)).scalar()
+        missed = [
+            day for day in (today - timedelta(days=n) for n in range(MOOD_MISSED_DAYS, 0, -1))
+            if first and first <= day and day not in logged and not _is_rest_day(day, rest_days)
+        ]
+        if missed:
+            alerts.append(_Alert(
+                "mood_missed", "mood", today.isoformat(),
+                fire_at=_at(today, day_start, tz),
+                expires_at=_at(today + timedelta(days=1), time.min, tz),
+                render=lambda _, missed=missed: (
+                    _count(len(missed), "missed mood check-in"),
+                    f"No check-in for {_list_days(missed)} yet.",
+                ),
+                dates=missed,
+            ))
     return alerts
 
 
@@ -353,6 +438,8 @@ def _compute(db: Session, user_id: str, tz: ZoneInfo, now: datetime) -> list[tup
     alerts = _task_alerts(tasks, today, day_start, prefs.default_reminder_minutes, enabled, tz)
     if enabled["habit_reminder"]:
         alerts += _habit_alerts(db, user_id, today, day_start, profile, tz)
+    if enabled["mood_reminder"] or enabled["mood_missed"]:
+        alerts += _mood_alerts(db, user_id, today, day_start, profile, prefs.mood_reminder_minutes, enabled, tz)
 
     delivered = []
     for alert in alerts:
@@ -388,6 +475,7 @@ def get_notifications(db: Session, user_id: str, tz: ZoneInfo, now: datetime) ->
             fire_at=at,
             task_ids=alert.task_ids,
             habit_ids=alert.habit_ids,
+            dates=alert.dates,
             read=bool(state and state.read_at),
         ))
     return notifications
