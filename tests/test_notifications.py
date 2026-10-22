@@ -56,13 +56,13 @@ def _by_id(db, now: datetime, tz=UTC_TZ) -> dict:
 
 # ── Reminders and final warnings ─────────────────────────────────────────────
 
-def test_reminder_then_final_warning_for_a_timed_task(db):
+def test_reminder_for_a_timed_task_lasts_until_it_is_due(db):
     task = _task(db, "Essay", DAY, time(16, 0))
     _task(db, "Done", DAY, time(16, 0), completed=True)
     _task(db, "Archived", DAY, time(16, 0), archived_at=datetime.now(UTC))
     _task(db, "Deleted", DAY, time(16, 0), deleted_at=datetime.now(UTC))
     _task(db, "Someone else's", DAY, time(16, 0), user_id=OTHER_USER_ID)
-    reminder, warning = (f"{kind}:task-{task.id}:2026-10-20T16:00" for kind in ("task_reminder", "final_warning"))
+    reminder = f"task_reminder:task-{task.id}:2026-10-20T16:00"
 
     assert _ids(db, _utc(DAY, 13, 59)) == []
     current = _by_id(db, _utc(DAY, 14, 0))
@@ -70,14 +70,10 @@ def test_reminder_then_final_warning_for_a_timed_task(db):
     assert current[reminder].body == "Due today at 4:00 PM."
     assert current[reminder].task_ids == [task.id]
 
-    # The final warning takes over from the reminder.
-    assert reminder in _ids(db, _utc(DAY, 15, 29))
-    current = _by_id(db, _utc(DAY, 15, 30))
-    assert reminder not in current
-    assert current[warning].title == "Essay is due in 30 minutes"
-    assert current[warning].fire_at == _utc(DAY, 15, 30)
-
-    assert warning in _ids(db, _utc(DAY, 15, 59))
+    # No final warning follows; the reminder stays up until the task is due.
+    current = _by_id(db, _utc(DAY, 15, 59))
+    assert list(current) == [reminder]
+    assert current[reminder].title == "Essay is due in 2 hours"
     assert _ids(db, _utc(DAY, 16, 0)) == []
 
 
@@ -94,9 +90,10 @@ def test_reminder_lead_comes_from_the_task_then_the_user_default(db):
     assert f"task_reminder:task-{default.id}:2026-10-20T20:00" in _ids(db, _utc(DAY, 16, 0))
 
 
-def test_a_lead_no_longer_than_the_final_warning_sends_only_the_warning(db):
-    task = _task(db, "Quick", DAY, time(12, 0), reminder_minutes=30)
-    assert _ids(db, _utc(DAY, 11, 45)) == [f"final_warning:task-{task.id}:2026-10-20T12:00"]
+def test_a_short_lead_still_sends_the_reminder(db):
+    task = _task(db, "Quick", DAY, time(12, 0), reminder_minutes=15)
+    assert _ids(db, _utc(DAY, 11, 44)) == []
+    assert _ids(db, _utc(DAY, 11, 45)) == [f"task_reminder:task-{task.id}:2026-10-20T12:00"]
 
 
 def test_reminder_lead_is_real_elapsed_time_across_dst(db):
@@ -300,19 +297,20 @@ def test_quiet_hours_within_one_day(db):
     assert reminder not in _ids(db, _utc(DAY, 12, 59))
     assert _by_id(db, _utc(DAY, 13, 0))[reminder].fire_at == _utc(DAY, 13, 0)
     # Alerts outside quiet hours are untouched.
-    assert _by_id(db, _utc(DAY, 13, 30))[f"final_warning:task-{task.id}:2026-10-20T14:00"].fire_at == _utc(
-        DAY, 13, 30
+    late = _task(db, "Afternoon", DAY, time(15, 30), reminder_minutes=30)
+    assert _by_id(db, _utc(DAY, 15, 0))[f"task_reminder:task-{late.id}:2026-10-20T15:30"].fire_at == _utc(
+        DAY, 15, 0
     )
 
 
 def test_quiet_hours_ending_in_the_repeated_hour_of_a_dst_fall_back(db):
     # US clocks fall back on 2026-11-01, so 01:00-02:00 happens twice. A
-    # final warning at 01:45 PST (the second pass, 09:45 UTC) is held to
+    # 30-minute reminder at 01:45 PST (the second pass, 09:45 UTC) is held to
     # 01:50 PST (09:50 UTC), not to the already-past 01:50 PDT.
     fall = date(2026, 11, 1)
     update_preferences(db, USER_ID, {"quiet_hours_start": "00:00", "quiet_hours_end": "01:50"})
-    task = _task(db, "Late night", fall, time(2, 15))
-    warning = f"final_warning:task-{task.id}:2026-11-01T02:15"
+    task = _task(db, "Late night", fall, time(2, 15), reminder_minutes=30)
+    warning = f"task_reminder:task-{task.id}:2026-11-01T02:15"
     assert warning not in _ids(db, _utc(fall, 9, 49), PACIFIC)
     held = _by_id(db, _utc(fall, 9, 50), PACIFIC)[warning]
     assert held.fire_at == _utc(fall, 9, 50)
@@ -325,7 +323,7 @@ def test_preferences_default_to_everything_on(client):
     resp = client.get("/get-notification-preferences")
     assert resp.status_code == 200
     assert resp.json() == {
-        "types": {"task_reminder": True, "final_warning": True, "mood_reminder": True, "mood_missed": True},
+        "types": {"task_reminder": True, "mood_reminder": True, "mood_missed": True},
         "quiet_hours_start": None,
         "quiet_hours_end": None,
         "default_reminder_minutes": 120,
@@ -334,14 +332,13 @@ def test_preferences_default_to_everything_on(client):
 
 
 def test_switched_off_types_are_left_out(client, db):
-    task = _task(db, "Essay", DAY, time(16, 0))
-    resp = client.patch("/update-notification-preferences", json={"types": {"final_warning": False}})
+    _task(db, "Essay", DAY, time(16, 0))
+    resp = client.patch("/update-notification-preferences", json={"types": {"task_reminder": False}})
     assert resp.status_code == 200
     resp = client.patch("/update-notification-preferences", json={"types": {"mood_missed": False}})
-    assert resp.json()["types"]["final_warning"] is False
+    assert resp.json()["types"]["task_reminder"] is False
     assert resp.json()["types"]["mood_missed"] is False
-    # Without the final warning, the reminder stays up until the task is due.
-    assert _ids(db, _utc(DAY, 15, 45)) == [f"task_reminder:task-{task.id}:2026-10-20T16:00"]
+    assert _ids(db, _utc(DAY, 15, 45)) == []
 
 
 def test_preference_updates_validate_and_reset(client):
@@ -365,7 +362,7 @@ def test_preference_updates_validate_and_reset(client):
     assert resp.json()["default_reminder_minutes"] == 45
     assert resp.json()["mood_reminder_minutes"] == 45
     # Fields left out are kept; nulls clear.
-    resp = patch({"types": {"final_warning": False}})
+    resp = patch({"types": {"mood_missed": False}})
     assert resp.json()["quiet_hours_end"] == "07:00"
     assert resp.json()["mood_reminder_minutes"] == 45
     resp = patch({
@@ -375,16 +372,22 @@ def test_preference_updates_validate_and_reset(client):
     assert resp.json()["quiet_hours_start"] is None
     assert resp.json()["default_reminder_minutes"] == 120
     assert resp.json()["mood_reminder_minutes"] == 60
-    assert resp.json()["types"]["final_warning"] is False
+    assert resp.json()["types"]["mood_missed"] is False
 
 
 def test_retired_types_are_accepted_and_ignored(client, db):
-    resp = client.patch("/update-notification-preferences", json={"types": {"overdue": False, "due_today": True}})
+    resp = client.patch(
+        "/update-notification-preferences",
+        json={"types": {"overdue": False, "due_today": True, "final_warning": False}},
+    )
     assert resp.status_code == 200
-    assert set(resp.json()["types"]) == {"task_reminder", "final_warning", "mood_reminder", "mood_missed"}
+    assert set(resp.json()["types"]) == {"task_reminder", "mood_reminder", "mood_missed"}
     assert client.get("/get-notification-preferences").json() == resp.json()
     # Read and dismissed state from older clients is still taken.
-    retired_ids = ("overdue:task-1:2026-10-20T16:00", "due_today:tasks:2026-10-20", "habit_reminder:habits:2026-10-20")
+    retired_ids = (
+        "overdue:task-1:2026-10-20T16:00", "due_today:tasks:2026-10-20", "habit_reminder:habits:2026-10-20",
+        "final_warning:task-1:2026-10-20T16:00",
+    )
     for retired_id in retired_ids:
         assert client.post("/dismiss-notifications", json={"ids": [retired_id]}).status_code == 204
 
@@ -449,12 +452,12 @@ def test_read_state_is_per_user(client, db):
 
 
 @pytest.mark.parametrize("bad_id", [
-    "final_warning",
-    "final_warning:task-1",
+    "task_reminder",
+    "task_reminder:task-1",
     "made_up:task-1:2026-10-20",
-    "final_warning:task-1:2026-13-40",
-    "final_warning:task-1:2026-10-20T25:00",
-    "final_warning:task-1:2026-10-20; DROP TABLE tasks",
+    "task_reminder:task-1:2026-13-40",
+    "task_reminder:task-1:2026-10-20T25:00",
+    "task_reminder:task-1:2026-10-20; DROP TABLE tasks",
 ])
 def test_malformed_notification_ids_are_rejected(client, bad_id):
     assert client.post("/mark-notifications-read", json={"ids": [bad_id]}).status_code == 422
