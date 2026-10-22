@@ -50,7 +50,7 @@ def test_mood_remind_off_carries_over_to_the_mood_notification_switches(db):
         Profile(user_id=unset, name="Unset"),
     ])
     update_preferences(
-        db, kept, {"types": {"final_warning": False, "mood_reminder": True}, "mood_reminder_minutes": 45}
+        db, kept, {"types": {"task_reminder": False, "mood_reminder": True}, "mood_reminder_minutes": 45}
     )
     db.flush()
 
@@ -60,8 +60,8 @@ def test_mood_remind_off_carries_over_to_the_mood_notification_switches(db):
         migration.upgrade()
     db.expire_all()
 
-    off = {"task_reminder": True, "final_warning": True, "mood_reminder": False, "mood_missed": False}
-    assert get_preferences(db, kept).types == {**off, "final_warning": False}
+    off = {"task_reminder": True, "mood_reminder": False, "mood_missed": False}
+    assert get_preferences(db, kept).types == {**off, "task_reminder": False}
     assert get_preferences(db, kept).mood_reminder_minutes == 45
     assert get_preferences(db, fresh).types == off
     for user_id in (nudged, unset):

@@ -6,8 +6,7 @@ mood check-ins, profile and notification preferences, which alerts have
 fired by now in the caller's time zone. The alerts are:
 
 - task_reminder: a task's reminder_minutes (or the user's default) before
-  its due time, until the final warning takes over.
-- final_warning: 30 minutes before a task's due time, until it is due.
+  its due time, until it is due.
 - mood_reminder: mood_reminder_minutes (default 60) before "Call it a day",
   but not before the day start, while the day's mood check-in isn't logged.
   Not on rest days.
@@ -56,7 +55,6 @@ from app.schemas.notification_schema import (
 
 NOTIFICATION_RETENTION = timedelta(days=30)
 DEFAULT_REMINDER_MINUTES = 120
-FINAL_WARNING = timedelta(minutes=30)
 DEFAULT_MOOD_REMINDER_MINUTES = 60
 # How many days back mood_missed looks for missing check-ins.
 MOOD_MISSED_DAYS = 7
@@ -228,7 +226,7 @@ class _Alert:
         return f"{self.type}:{self.subject}:{self.occurrence}"
 
 
-def _task_alerts(tasks: list[TaskModel], default_lead: int, enabled: dict, tz: ZoneInfo) -> list[_Alert]:
+def _task_alerts(tasks: list[TaskModel], default_lead: int, tz: ZoneInfo) -> list[_Alert]:
     alerts: list[_Alert] = []
     for task in tasks:
         due_day = task.due_date.date()
@@ -240,21 +238,10 @@ def _task_alerts(tasks: list[TaskModel], default_lead: int, enabled: dict, tz: Z
         def countdown(delivered: datetime, t=task, due_at=due_at, due_local=due_local) -> tuple[str, str]:
             return f"{t.title} is due in {_duration(due_at - delivered)}", f"Due {_when(due_local, delivered)}."
 
-        warning_at = due_at - FINAL_WARNING
         lead = timedelta(minutes=task.reminder_minutes or default_lead)
-        # A lead no longer than the final warning's would only repeat it.
-        if lead > FINAL_WARNING:
-            alerts.append(_Alert(
-                "task_reminder", subject, occurrence,
-                fire_at=due_at - lead,
-                # The final warning takes over, if the user gets it.
-                expires_at=warning_at if enabled["final_warning"] else due_at,
-                render=countdown,
-                task_ids=[task.id],
-            ))
         alerts.append(_Alert(
-            "final_warning", subject, occurrence,
-            fire_at=warning_at,
+            "task_reminder", subject, occurrence,
+            fire_at=due_at - lead,
             expires_at=due_at,
             render=countdown,
             task_ids=[task.id],
@@ -345,7 +332,7 @@ def _compute(db: Session, user_id: str, tz: ZoneInfo, now: datetime) -> list[tup
         .order_by(TaskModel.due_date, TaskModel.due_time, TaskModel.id)
         .all()
     )
-    alerts = _task_alerts(tasks, prefs.default_reminder_minutes, enabled, tz)
+    alerts = _task_alerts(tasks, prefs.default_reminder_minutes, tz)
     if enabled["mood_reminder"] or enabled["mood_missed"]:
         alerts += _mood_alerts(db, user_id, today, day_start, profile, prefs.mood_reminder_minutes, enabled, tz)
 
