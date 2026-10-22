@@ -221,8 +221,7 @@ def test_mood_tags_without_check_ins_are_just_the_defaults(client):
 
 # ── Profile settings ─────────────────────────────────────────────────────────
 
-# daily is retired and always true; the mood_reminder notification switch replaced it.
-DEFAULT_SETTINGS = {"daily": True, "weekly": False, "monthly": False}
+DEFAULT_SETTINGS = {"weekly": False, "monthly": False}
 
 
 def test_profile_returns_default_mood_settings_until_changed(client, db):

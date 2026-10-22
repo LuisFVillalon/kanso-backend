@@ -116,16 +116,10 @@ class MoodTags(BaseModel):
 # ── Profile settings ─────────────────────────────────────────────────────────
 
 class MoodCheckinSettings(BaseModel):
-    """Which check-ins the dashboard nudges for, as stored. Weekly and monthly are opt-in."""
+    """Which of the weekly and monthly check-ins the dashboard nudges for. Both are opt-in."""
 
     weekly: bool = False
     monthly: bool = False
-
-
-class MoodCheckinSettingsOut(MoodCheckinSettings):
-    # Retired: the mood_reminder notification switch now turns daily check-ins
-    # on and off. Still returned, always true, for older clients that read it.
-    daily: bool = True
 
 
 class MoodCheckinSettingsUpdate(BaseModel):
@@ -150,12 +144,12 @@ def merge_mood_settings(stored: dict | None, changes: dict) -> dict:
     return {k: v for k, v in merged.items() if v is not None and k in MoodCheckinSettings.model_fields}
 
 
-def resolve_mood_settings(stored: dict | MoodCheckinSettingsOut | None) -> MoodCheckinSettingsOut:
-    if isinstance(stored, MoodCheckinSettingsOut):
+def resolve_mood_settings(stored: dict | MoodCheckinSettings | None) -> MoodCheckinSettings:
+    if isinstance(stored, MoodCheckinSettings):
         return stored
     known = {k: v for k, v in (stored or {}).items() if k in MoodCheckinSettings.model_fields}
-    return MoodCheckinSettingsOut(**known)
+    return MoodCheckinSettings(**known)
 
 
 # The profile's stored overrides, read back with every default filled in.
-ResolvedMoodSettings = Annotated[MoodCheckinSettingsOut, BeforeValidator(resolve_mood_settings)]
+ResolvedMoodSettings = Annotated[MoodCheckinSettings, BeforeValidator(resolve_mood_settings)]
