@@ -116,21 +116,25 @@ class MoodTags(BaseModel):
 # ── Profile settings ─────────────────────────────────────────────────────────
 
 class MoodCheckinSettings(BaseModel):
-    """Which check-ins the dashboard nudges for. Daily is on by default, weekly and monthly opt-in."""
+    """Which check-ins the dashboard nudges for, as stored. Weekly and monthly are opt-in."""
 
-    daily: bool = True
     weekly: bool = False
     monthly: bool = False
+
+
+class MoodCheckinSettingsOut(MoodCheckinSettings):
+    # Retired: the mood_reminder notification switch now turns daily check-ins
+    # on and off. Still returned, always true, for older clients that read it.
+    daily: bool = True
 
 
 class MoodCheckinSettingsUpdate(BaseModel):
     """Only the fields given change; null restores a field's default.
 
-    The retired remind and show_in_reports settings, which older clients may
-    still send, are ignored like any other unknown field.
+    The retired daily, remind and show_in_reports settings, which older
+    clients may still send, are ignored like any other unknown field.
     """
 
-    daily: bool | None = None
     weekly: bool | None = None
     monthly: bool | None = None
 
@@ -146,12 +150,12 @@ def merge_mood_settings(stored: dict | None, changes: dict) -> dict:
     return {k: v for k, v in merged.items() if v is not None and k in MoodCheckinSettings.model_fields}
 
 
-def resolve_mood_settings(stored: dict | MoodCheckinSettings | None) -> MoodCheckinSettings:
-    if isinstance(stored, MoodCheckinSettings):
+def resolve_mood_settings(stored: dict | MoodCheckinSettingsOut | None) -> MoodCheckinSettingsOut:
+    if isinstance(stored, MoodCheckinSettingsOut):
         return stored
     known = {k: v for k, v in (stored or {}).items() if k in MoodCheckinSettings.model_fields}
-    return MoodCheckinSettings(**known)
+    return MoodCheckinSettingsOut(**known)
 
 
 # The profile's stored overrides, read back with every default filled in.
-ResolvedMoodSettings = Annotated[MoodCheckinSettings, BeforeValidator(resolve_mood_settings)]
+ResolvedMoodSettings = Annotated[MoodCheckinSettingsOut, BeforeValidator(resolve_mood_settings)]

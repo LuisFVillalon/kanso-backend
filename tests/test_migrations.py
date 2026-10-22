@@ -66,3 +66,30 @@ def test_mood_remind_off_carries_over_to_the_mood_notification_switches(db):
     assert get_preferences(db, fresh).types == off
     for user_id in (nudged, unset):
         assert db.query(NotificationPreferences).filter(NotificationPreferences.user_id == user_id).first() is None
+
+
+def test_mood_daily_off_carries_over_to_the_mood_reminder_switch(db):
+    kept, fresh, daily, unset = (f"00000000-0000-0000-0000-00000000020{n}" for n in range(4))
+    db.add_all([
+        Profile(user_id=kept, name="Kept", mood_checkins={"daily": False, "weekly": True}),
+        Profile(user_id=fresh, name="Fresh", mood_checkins={"daily": False}),
+        Profile(user_id=daily, name="Daily", mood_checkins={"daily": True}),
+        Profile(user_id=unset, name="Unset"),
+    ])
+    update_preferences(
+        db, kept, {"types": {"final_warning": False, "mood_missed": True}, "mood_reminder_minutes": 45}
+    )
+    db.flush()
+
+    migration = _load_migration("carry_over_mood_daily_off")
+    with Operations.context(MigrationContext.configure(db.connection())):
+        migration.upgrade()
+        migration.upgrade()
+    db.expire_all()
+
+    off = {"task_reminder": True, "final_warning": True, "mood_reminder": False, "mood_missed": True}
+    assert get_preferences(db, kept).types == {**off, "final_warning": False}
+    assert get_preferences(db, kept).mood_reminder_minutes == 45
+    assert get_preferences(db, fresh).types == off
+    for user_id in (daily, unset):
+        assert db.query(NotificationPreferences).filter(NotificationPreferences.user_id == user_id).first() is None

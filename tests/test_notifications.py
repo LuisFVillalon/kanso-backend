@@ -162,7 +162,7 @@ def test_mood_reminder_lead_past_the_day_start_fires_at_the_day_start(db):
     assert reminder.dates == [DAY]
 
 
-def test_mood_reminder_skips_logged_days_rest_days_and_disabled_settings(db):
+def test_mood_reminder_skips_logged_days_and_rest_days(db):
     _profile(db, rest_days=[3])  # Wednesday
     assert _ids(db, _utc(DAY + timedelta(days=1), 21, 0)) == []
     # A week or month check-in isn't the day's.
@@ -171,11 +171,6 @@ def test_mood_reminder_skips_logged_days_rest_days_and_disabled_settings(db):
     assert _ids(db, _utc(DAY, 21, 0)) == ["mood_reminder:mood:2026-10-20"]
     _mood(db, DAY)
     assert _ids(db, _utc(DAY, 21, 0)) == []
-
-    profile = db.query(Profile).filter(Profile.user_id == USER_ID).one()
-    profile.mood_checkins = {"daily": False}
-    db.flush()
-    assert _ids(db, _utc(DAY + timedelta(days=6), 21, 0)) == []
 
 
 def test_mood_reminder_for_a_call_it_a_day_after_midnight(db):
@@ -198,10 +193,11 @@ def test_mood_reminder_follows_call_it_a_day_across_dst(db):
 
 
 def test_mood_alerts_can_be_switched_off(db):
-    update_preferences(db, USER_ID, {"types": {"mood_reminder": False}})
     _mood(db, DAY - timedelta(days=3))
-    assert _ids(db, _utc(DAY, 21, 0)) == ["mood_missed:mood:2026-10-20"]
     update_preferences(db, USER_ID, {"types": {"mood_missed": False}})
+    assert _ids(db, _utc(DAY, 21, 0)) == ["mood_reminder:mood:2026-10-20"]
+    # The mood reminder's switch turns daily check-ins off, missed ones included.
+    update_preferences(db, USER_ID, {"types": {"mood_reminder": False, "mood_missed": True}})
     assert _ids(db, _utc(DAY, 21, 0)) == []
 
 
@@ -243,10 +239,10 @@ def test_mood_missed_starts_at_the_first_check_in_and_skips_rest_days(db):
     assert _ids(db, _utc(date(2026, 10, 24), 7, 0)) == []
 
 
-def test_mood_missed_needs_daily_check_ins_on(db):
+def test_a_stored_retired_daily_setting_is_ignored(db):
     _profile(db, mood_checkins={"daily": False, "weekly": True})
     _mood(db, DAY - timedelta(days=5))
-    assert _ids(db, _utc(DAY, 8, 0)) == []
+    assert _ids(db, _utc(DAY, 21, 0)) == ["mood_reminder:mood:2026-10-20", "mood_missed:mood:2026-10-20"]
 
 
 @pytest.mark.parametrize("remind", ["shutoff", "shutoff+30", "off"])
