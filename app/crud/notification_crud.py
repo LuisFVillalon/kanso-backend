@@ -13,8 +13,9 @@ fired by now in the caller's time zone. The alerts are:
 - mood_missed: at the day start, listing the past week's days with no mood
   check-in, counted from the user's first one. Not on rest days.
 
-Both mood alerts need daily check-ins on in the profile's mood settings; they
-only say that a check-in is due or missing, never what one holds.
+The mood_reminder switch turns daily check-ins on and off, so both mood
+alerts follow it, and mood_missed also has its own switch. They only say
+that a check-in is due or missing, never what one holds.
 
 Only tasks with a due_date and due_time count. Completed, archived and
 deleted tasks are left out. An alert that fires during the user's quiet
@@ -45,7 +46,6 @@ from app.models.notification_model import NotificationState
 from app.models.profile_model import Profile
 from app.models.task_model import Task as TaskModel
 from app.schemas.limits import REMINDER_MINUTES_MAX
-from app.schemas.mood_schema import resolve_mood_settings
 from app.schemas.notification_schema import (
     NOTIFICATION_TYPES,
     Notification,
@@ -253,9 +253,6 @@ def _mood_alerts(
     db: Session, user_id: str, today: date, day_start: time, profile: Profile | None, lead: int,
     enabled: dict, tz: ZoneInfo,
 ) -> list[_Alert]:
-    settings = resolve_mood_settings(profile.mood_checkins if profile else None)
-    if not settings.daily:
-        return []
     shutoff = _parse_hhmm(profile.shutoff_time if profile else None, DEFAULT_SHUTOFF)
     rest_days = (profile.rest_days if profile else None) or []
     daily = db.query(MoodCheckin.period_start).filter(
@@ -266,23 +263,22 @@ def _mood_alerts(
     }
 
     alerts = []
-    if enabled["mood_reminder"]:
-        # A "Call it a day" at or before the day start falls after midnight,
-        # so yesterday's reminder can still be live early today.
-        for day in (today - timedelta(days=1), today):
-            if _is_rest_day(day, rest_days) or day in logged:
-                continue
-            shutoff_at = _shutoff_at(day, shutoff, day_start, tz)
-            alerts.append(_Alert(
-                "mood_reminder", "mood", day.isoformat(),
-                fire_at=max(shutoff_at - timedelta(minutes=lead), _at(day, day_start, tz)),
-                expires_at=max(_at(day + timedelta(days=1), time.min, tz), shutoff_at),
-                render=lambda _, shutoff=shutoff: (
-                    "How was your day?",
-                    f"Log your mood check-in before you call it a day at {_clock(shutoff)}.",
-                ),
-                dates=[day],
-            ))
+    # A "Call it a day" at or before the day start falls after midnight,
+    # so yesterday's reminder can still be live early today.
+    for day in (today - timedelta(days=1), today):
+        if _is_rest_day(day, rest_days) or day in logged:
+            continue
+        shutoff_at = _shutoff_at(day, shutoff, day_start, tz)
+        alerts.append(_Alert(
+            "mood_reminder", "mood", day.isoformat(),
+            fire_at=max(shutoff_at - timedelta(minutes=lead), _at(day, day_start, tz)),
+            expires_at=max(_at(day + timedelta(days=1), time.min, tz), shutoff_at),
+            render=lambda _, shutoff=shutoff: (
+                "How was your day?",
+                f"Log your mood check-in before you call it a day at {_clock(shutoff)}.",
+            ),
+            dates=[day],
+        ))
 
     if enabled["mood_missed"] and not _is_rest_day(today, rest_days):
         # When daily check-ins were switched on isn't stored, so days count
@@ -333,7 +329,8 @@ def _compute(db: Session, user_id: str, tz: ZoneInfo, now: datetime) -> list[tup
         .all()
     )
     alerts = _task_alerts(tasks, prefs.default_reminder_minutes, tz)
-    if enabled["mood_reminder"] or enabled["mood_missed"]:
+    # The mood reminder's switch turns daily check-ins on and off as a whole.
+    if enabled["mood_reminder"]:
         alerts += _mood_alerts(db, user_id, today, day_start, profile, prefs.mood_reminder_minutes, enabled, tz)
 
     delivered = []

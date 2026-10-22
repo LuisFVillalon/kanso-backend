@@ -116,9 +116,8 @@ class MoodTags(BaseModel):
 # ── Profile settings ─────────────────────────────────────────────────────────
 
 class MoodCheckinSettings(BaseModel):
-    """Which check-ins the dashboard nudges for. Daily is on by default, weekly and monthly opt-in."""
+    """Which of the weekly and monthly check-ins the dashboard nudges for. Both are opt-in."""
 
-    daily: bool = True
     weekly: bool = False
     monthly: bool = False
 
@@ -126,11 +125,10 @@ class MoodCheckinSettings(BaseModel):
 class MoodCheckinSettingsUpdate(BaseModel):
     """Only the fields given change; null restores a field's default.
 
-    The retired remind and show_in_reports settings, which older clients may
-    still send, are ignored like any other unknown field.
+    The retired daily, remind and show_in_reports settings, which older
+    clients may still send, are ignored like any other unknown field.
     """
 
-    daily: bool | None = None
     weekly: bool | None = None
     monthly: bool | None = None
 
