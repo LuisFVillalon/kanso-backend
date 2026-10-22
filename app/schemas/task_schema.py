@@ -133,8 +133,13 @@ class Task(TaskBase):
     model_config = {"from_attributes": True}
 
 
-class LinkedTaskRef(BaseModel):
-    """One of a parent's linked tasks: an existing task by id, or a new one by title."""
+class LinkedTaskRef(TaskCreate):
+    """One of a parent's linked tasks: an existing task by id, or a new one.
+
+    A new task takes the same fields, limits and checks as POST /create-task,
+    so it can be created fully specified; only its title is required. Leaving
+    out tags gives it the parent's tags.
+    """
 
     id: int | None = None
     title: str | None = Field(None, max_length=TITLE_MAX)
@@ -148,6 +153,8 @@ class LinkedTaskRef(BaseModel):
     def id_or_title(self):
         if (self.id is None) == (not self.title):
             raise ValueError("Give either the id of an existing task or the title of a new one")
+        if self.id is not None and self.model_fields_set != {"id"}:
+            raise ValueError("An existing task is listed by its id alone")
         return self
 
 

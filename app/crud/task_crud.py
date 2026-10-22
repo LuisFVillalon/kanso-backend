@@ -162,32 +162,31 @@ def _next_position(db: Session, parent_id: int) -> int:
     return 0 if last is None else last + 1
 
 
-def create_task(db: Session, task: TaskCreate, user_id: str):
-    """Create and persist a new task, auto-creating any new tags."""
-    now = datetime.now(UTC)
-    priority = task.priority
-    if priority is not None:
-        _validate_priority_unique(db, user_id, priority)
+def _new_task(
+    db: Session, task: TaskCreate, user_id: str, parent_task_id: int | None, position: int | None, tags=None
+) -> TaskModel:
+    """Check a new task's priority and Canvas link and build it, unsaved.
+
+    Its tags are set from task.tags, or to `tags` (tag rows) when given.
+    """
+    if task.priority is not None:
+        _validate_priority_unique(db, user_id, task.priority)
     if task.canvas_assignment_id is not None and not task.completed:
         _validate_canvas_unique(db, user_id, task.canvas_assignment_id)
-    position = None
-    if task.parent_task_id is not None:
-        parent = _get_parent(db, task.parent_task_id, user_id)
-        _validate_link(db, parent, None, user_id)
-        position = _next_position(db, parent.id)
 
+    now = datetime.now(UTC)
     db_task = TaskModel(
         title=task.title,
         description=task.description,
         category=task.category,
         completed=task.completed,
-        priority=priority,
+        priority=task.priority,
         due_date=task.due_date,
         due_time=task.due_time,
         created_date=now,
         completed_date=now if task.completed else None,
         estimated_time=task.estimated_time,
-        parent_task_id=task.parent_task_id,
+        parent_task_id=parent_task_id,
         position=position,
         reminder_minutes=task.reminder_minutes,
         canvas_assignment_id=task.canvas_assignment_id,
@@ -197,7 +196,25 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
         canvas_due_source=_canvas_source(db, user_id) if task.canvas_assignment_id is not None else None,
         user_id=user_id,
     )
-    set_item_tags(db, db_task, task.tags, user_id)
+    if tags is None:
+        set_item_tags(db, db_task, task.tags, user_id)
+    else:
+        db_task.tags = tags
+    return db_task
+
+
+def create_task(db: Session, task: TaskCreate, user_id: str):
+    """Create and persist a new task, auto-creating any new tags.
+
+    A task created under a parent goes after the parent's existing linked tasks.
+    """
+    position = None
+    if task.parent_task_id is not None:
+        parent = _get_parent(db, task.parent_task_id, user_id)
+        _validate_link(db, parent, None, user_id)
+        position = _next_position(db, parent.id)
+
+    db_task = _new_task(db, task, user_id, task.parent_task_id, position)
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
@@ -488,10 +505,11 @@ def set_linked_tasks(db: Session, task_id: int, children: list[LinkedTaskRef], u
     """Save a task's linked tasks in one transaction. Returns (parent, children), or None if not found.
 
     `children` lists every active linked task in order. Existing tasks are
-    linked (moved from another parent if they have one) and new titles are
-    created with the parent's tags and no due date or priority; each gets its
-    index as its position. Active linked tasks left out are unlinked, not
-    deleted. Archived ones stay linked, since the client never sees them.
+    linked (moved from another parent if they have one) and new ones are
+    created like POST /create-task, with the parent's tags unless they name
+    their own; each gets its index as its position. Active linked tasks left
+    out are unlinked, not deleted. Archived ones stay linked, since the client
+    never sees them.
     Only new links are checked against the rules, so links already under this
     task always re-save.
     """
@@ -502,18 +520,19 @@ def set_linked_tasks(db: Session, task_id: int, children: list[LinkedTaskRef], u
     if len(ids) != len(set(ids)):
         raise HTTPException(status_code=400, detail="A task can only be listed once")
 
-    now = datetime.now(UTC)
     linked: list[TaskModel] = []
     for position, ref in enumerate(children):
         if ref.id is None:
             _validate_link(db, parent, None, user_id)
-            child = TaskModel(
-                title=ref.title,
-                created_date=now,
-                user_id=user_id,
-                tags=[t for t in parent.tags if t.deleted_at is None],
-            )
+            if ref.parent_task_id not in (None, parent.id):
+                raise HTTPException(
+                    status_code=400, detail=f"A new linked task's parent_task_id must be {parent.id} or omitted"
+                )
+            tags = None if "tags" in ref.model_fields_set else [t for t in parent.tags if t.deleted_at is None]
+            child = _new_task(db, ref, user_id, parent.id, position, tags)
             db.add(child)
+            # Saved now so the next new task's priority and Canvas checks see it.
+            db.flush()
         else:
             child = get_owned(db, TaskModel, ref.id, user_id)
             if not child:
