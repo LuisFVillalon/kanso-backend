@@ -682,13 +682,16 @@ def test_an_all_day_due_date_stored_in_another_zone_is_unchanged(feed_connected,
     assert _task(db, task["id"]).due_date.date().isoformat() == edited
 
 
-def test_an_all_day_item_moved_to_another_day_moves_the_task(feed_connected, db):
-    stale = datetime.combine(ALL_DAY - timedelta(days=3), time(23, 59, 59), tzinfo=LA)
+@pytest.mark.parametrize("days", [1, -1, 3])
+def test_an_all_day_item_moved_to_another_day_moves_the_task(feed_connected, db, days):
+    # The task last stored the assignment due `days` before its date in the feed.
+    stale = datetime.combine(ALL_DAY - timedelta(days=days), time(23, 59, 59), tzinfo=LA)
     task = feed_connected.post("/create-task", json={
         "title": "Speech", "canvas_assignment_id": 102, "canvas_due_at": stale.isoformat(),
+        "due_date": stale.date().isoformat(),
     }).json()
     result = _sync(feed_connected)["results"][0]
-    assert result["due_changed"] is True
+    assert result["synced"] is True and result["due_changed"] is True
     assert _task(db, task["id"]).due_date.date() == ALL_DAY
     assert _task(db, task["id"]).canvas_due_at == datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
 
