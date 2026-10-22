@@ -2,30 +2,23 @@
 In-app notifications, computed on demand.
 
 Nothing is scheduled or queued: each GET works out, from the user's tasks,
-habits, habit logs, profile and notification preferences, which alerts have
+mood check-ins, profile and notification preferences, which alerts have
 fired by now in the caller's time zone. The alerts are:
 
-- due_today: a summary of the tasks due today, at the profile's day start.
 - task_reminder: a task's reminder_minutes (or the user's default) before
   its due time, until the final warning takes over.
 - final_warning: 30 minutes before a task's due time, until it is due.
-- overdue: once, when a task's due time passes. A task with only a due date
-  is overdue at the next day's start.
-- habit_reminder: an hour before the profile's "Call it a day" time, while
-  any of the day's habits isn't logged. Not on rest days.
-- mood_reminder: mood_reminder_minutes (30 or 60) before "Call it a day",
+- mood_reminder: mood_reminder_minutes (default 60) before "Call it a day",
   while the day's mood check-in isn't logged. Not on rest days.
 - mood_missed: at the day start, listing the past week's days with no mood
   check-in, counted from the user's first one. Not on rest days.
 
-Both mood alerts need daily check-ins on in the profile's mood settings, and
-are silenced by its remind "off" as well; they only say that a check-in is
-due or missing, never what one holds.
+Both mood alerts need daily check-ins on in the profile's mood settings; they
+only say that a check-in is due or missing, never what one holds.
 
-Only tasks with a due_date count; reminders and final warnings need a
-due_time too. Completed, archived and deleted tasks and archived and deleted
-habits are left out. An alert that fires during the user's quiet hours is
-held until they end, and dropped if it would no longer apply by then.
+Only tasks with a due_date and due_time count. Completed, archived and
+deleted tasks are left out. An alert that fires during the user's quiet
+hours is held until they end, and dropped if it would no longer apply by then.
 
 Each notification has a deterministic id, "{type}:{subject}:{occurrence}",
 so the same alert gets the same id on every device and reload; moving a
@@ -46,8 +39,6 @@ from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models.habit_log_model import HabitLog
-from app.models.habit_model import Habit
 from app.models.mood_checkin_model import MoodCheckin
 from app.models.notification_model import NotificationPreferences as PreferencesModel
 from app.models.notification_model import NotificationState
@@ -65,15 +56,12 @@ from app.schemas.notification_schema import (
 NOTIFICATION_RETENTION = timedelta(days=30)
 DEFAULT_REMINDER_MINUTES = 120
 FINAL_WARNING = timedelta(minutes=30)
-HABIT_REMINDER_LEAD = timedelta(hours=1)
 DEFAULT_MOOD_REMINDER_MINUTES = 60
 # How many days back mood_missed looks for missing check-ins.
 MOOD_MISSED_DAYS = 7
 # The frontend's defaults for a profile without these times set.
 DEFAULT_DAY_START = time(8, 0)
 DEFAULT_SHUTOFF = time(22, 0)
-# Titles listed in a summary's body before "and N more".
-SUMMARY_TITLES_MAX = 3
 
 
 # ── Preferences ──────────────────────────────────────────────────────────────
@@ -110,7 +98,8 @@ def update_preferences(db: Session, user_id: str, changes: dict) -> Notification
 
     if changes.get("types") is not None:
         # A new dict, so the JSON column registers the change.
-        row.types = {**(row.types or {}), **changes["types"]}
+        types = {t: on for t, on in changes["types"].items() if t in NOTIFICATION_TYPES}
+        row.types = {**(row.types or {}), **types}
     row.quiet_hours_start, row.quiet_hours_end = start, end
     for column in ("default_reminder_minutes", "mood_reminder_minutes"):
         if column in changes:
@@ -208,12 +197,6 @@ def _duration(delta: timedelta) -> str:
     return " ".join(parts[:2])
 
 
-def _list_titles(titles: list[str]) -> str:
-    shown = titles[:SUMMARY_TITLES_MAX]
-    rest = len(titles) - len(shown)
-    return ", ".join(shown) + (f" and {rest} more" if rest else "")
-
-
 def _list_days(days: list[date]) -> str:
     """"Oct 19", "Oct 19 and Oct 20" or "Oct 18, Oct 19 and Oct 20"."""
     labels = [f"{day:%b} {day.day}" for day in days]
@@ -237,7 +220,6 @@ class _Alert:
     # Builds (title, body) from the local delivery time.
     render: Callable[[datetime], tuple[str, str]]
     task_ids: list[int] = field(default_factory=list)
-    habit_ids: list[int] = field(default_factory=list)
     dates: list[date] = field(default_factory=list)
 
     @property
@@ -245,35 +227,11 @@ class _Alert:
         return f"{self.type}:{self.subject}:{self.occurrence}"
 
 
-def _task_alerts(
-    tasks: list[TaskModel], today: date, day_start: time, default_lead: int, enabled: dict, tz: ZoneInfo
-) -> list[_Alert]:
+def _task_alerts(tasks: list[TaskModel], default_lead: int, enabled: dict, tz: ZoneInfo) -> list[_Alert]:
     alerts: list[_Alert] = []
-
-    due_today = [t for t in tasks if t.due_date.date() == today]
-    if due_today:
-        titles = [t.title for t in due_today]
-        alerts.append(_Alert(
-            "due_today", "tasks", today.isoformat(),
-            fire_at=_at(today, day_start, tz),
-            expires_at=_at(today + timedelta(days=1), time.min, tz),
-            render=lambda _, titles=titles: (f"{_count(len(titles), 'task')} due today", _list_titles(titles)),
-            task_ids=[t.id for t in due_today],
-        ))
-
     for task in tasks:
         due_day = task.due_date.date()
         subject = f"task-{task.id}"
-        if task.due_time is None:
-            alerts.append(_Alert(
-                "overdue", subject, due_day.isoformat(),
-                fire_at=_at(due_day + timedelta(days=1), day_start, tz),
-                expires_at=None,
-                render=lambda _, t=task, d=due_day: (f"Overdue: {t.title}", f"It was due on {_day_label(d)}."),
-                task_ids=[task.id],
-            ))
-            continue
-
         due_at = _at(due_day, task.due_time, tz)
         occurrence = f"{due_day.isoformat()}T{task.due_time:%H:%M}"
         due_local = due_at.astimezone(tz)
@@ -300,59 +258,6 @@ def _task_alerts(
             render=countdown,
             task_ids=[task.id],
         ))
-        alerts.append(_Alert(
-            "overdue", subject, occurrence,
-            fire_at=due_at,
-            expires_at=None,
-            render=lambda _, t=task, d=due_local: (
-                f"Overdue: {t.title}", f"It was due on {_day_label(d.date())} at {_clock(d.time())}."
-            ),
-            task_ids=[task.id],
-        ))
-    return alerts
-
-
-def _habit_alerts(
-    db: Session, user_id: str, today: date, day_start: time, profile: Profile | None, tz: ZoneInfo
-) -> list[_Alert]:
-    habits = (
-        db.query(Habit)
-        .filter(Habit.user_id == user_id, Habit.archived_at.is_(None), Habit.deleted_at.is_(None))
-        .order_by(func.lower(Habit.title), Habit.id)
-        .all()
-    )
-    if not habits:
-        return []
-    shutoff = _parse_hhmm(profile.shutoff_time if profile else None, DEFAULT_SHUTOFF)
-    rest_days = (profile.rest_days if profile else None) or []
-    # A "Call it a day" at or before the day start falls after midnight, so
-    # yesterday's reminder can still be live early today.
-    days = (today - timedelta(days=1), today)
-    logged = set(
-        db.query(HabitLog.habit_id, HabitLog.logged_date)
-        .filter(HabitLog.habit_id.in_([h.id for h in habits]), HabitLog.logged_date.in_(days))
-        .all()
-    )
-
-    alerts = []
-    for day in days:
-        if _is_rest_day(day, rest_days):
-            continue
-        left = [h for h in habits if (h.id, day) not in logged]
-        if not left:
-            continue
-        shutoff_at = _shutoff_at(day, shutoff, day_start, tz)
-        titles = [h.title for h in left]
-        alerts.append(_Alert(
-            "habit_reminder", "habits", day.isoformat(),
-            fire_at=shutoff_at - HABIT_REMINDER_LEAD,
-            expires_at=max(_at(day + timedelta(days=1), time.min, tz), shutoff_at),
-            render=lambda _, titles=titles, shutoff=shutoff: (
-                f"{_count(len(titles), 'habit')} left today",
-                f"{_list_titles(titles)}. Call it a day at {_clock(shutoff)}.",
-            ),
-            habit_ids=[h.id for h in left],
-        ))
     return alerts
 
 
@@ -361,7 +266,7 @@ def _mood_alerts(
     enabled: dict, tz: ZoneInfo,
 ) -> list[_Alert]:
     settings = resolve_mood_settings(profile.mood_checkins if profile else None)
-    if not settings.daily or settings.remind == "off":
+    if not settings.daily:
         return []
     shutoff = _parse_hhmm(profile.shutoff_time if profile else None, DEFAULT_SHUTOFF)
     rest_days = (profile.rest_days if profile else None) or []
@@ -374,7 +279,8 @@ def _mood_alerts(
 
     alerts = []
     if enabled["mood_reminder"]:
-        # As for habits, yesterday's reminder can still be live early today.
+        # A "Call it a day" at or before the day start falls after midnight,
+        # so yesterday's reminder can still be live early today.
         for day in (today - timedelta(days=1), today):
             if _is_rest_day(day, rest_days) or day in logged:
                 continue
@@ -430,16 +336,15 @@ def _compute(db: Session, user_id: str, tz: ZoneInfo, now: datetime) -> list[tup
             TaskModel.archived_at.is_(None),
             TaskModel.deleted_at.is_(None),
             TaskModel.completed.is_not(True),
+            TaskModel.due_time.is_not(None),
             TaskModel.due_date >= datetime.combine(oldest, time.min),
             # The longest reminder lead reaches this far ahead.
             TaskModel.due_date < datetime.combine(today + timedelta(minutes=REMINDER_MINUTES_MAX, days=2), time.min),
         )
-        .order_by(TaskModel.due_date, TaskModel.due_time.asc().nulls_first(), TaskModel.id)
+        .order_by(TaskModel.due_date, TaskModel.due_time, TaskModel.id)
         .all()
     )
-    alerts = _task_alerts(tasks, today, day_start, prefs.default_reminder_minutes, enabled, tz)
-    if enabled["habit_reminder"]:
-        alerts += _habit_alerts(db, user_id, today, day_start, profile, tz)
+    alerts = _task_alerts(tasks, prefs.default_reminder_minutes, enabled, tz)
     if enabled["mood_reminder"] or enabled["mood_missed"]:
         alerts += _mood_alerts(db, user_id, today, day_start, profile, prefs.mood_reminder_minutes, enabled, tz)
 
@@ -476,7 +381,6 @@ def get_notifications(db: Session, user_id: str, tz: ZoneInfo, now: datetime) ->
             body=body,
             fire_at=at,
             task_ids=alert.task_ids,
-            habit_ids=alert.habit_ids,
             dates=alert.dates,
             read=bool(state and state.read_at),
         ))

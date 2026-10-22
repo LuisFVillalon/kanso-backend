@@ -115,29 +115,24 @@ class MoodTags(BaseModel):
 
 # ── Profile settings ─────────────────────────────────────────────────────────
 
-MoodRemind = Literal["shutoff", "shutoff+30", "off"]
-
-
 class MoodCheckinSettings(BaseModel):
-    """Which check-ins the dashboard nudges for, and when. Daily is on by default, weekly and monthly opt-in."""
+    """Which check-ins the dashboard nudges for. Daily is on by default, weekly and monthly opt-in."""
 
     daily: bool = True
     weekly: bool = False
     monthly: bool = False
-    # Nudge at "Call it a day", 30 minutes after it, or not at all; "off" also
-    # silences the mood_reminder and mood_missed notifications.
-    remind: MoodRemind = "shutoff"
-    show_in_reports: bool = True
 
 
 class MoodCheckinSettingsUpdate(BaseModel):
-    """Only the fields given change; null restores a field's default."""
+    """Only the fields given change; null restores a field's default.
+
+    The retired remind and show_in_reports settings, which older clients may
+    still send, are ignored like any other unknown field.
+    """
 
     daily: bool | None = None
     weekly: bool | None = None
     monthly: bool | None = None
-    remind: MoodRemind | None = None
-    show_in_reports: bool | None = None
 
 
 def merge_mood_settings(stored: dict | None, changes: dict) -> dict:
@@ -147,7 +142,8 @@ def merge_mood_settings(stored: dict | None, changes: dict) -> dict:
     its default, and a NULL column means "all defaults".
     """
     merged = {**(stored or {}), **changes}
-    return {k: v for k, v in merged.items() if v is not None}
+    # Dropping unknown keys also clears retired settings from older rows.
+    return {k: v for k, v in merged.items() if v is not None and k in MoodCheckinSettings.model_fields}
 
 
 def resolve_mood_settings(stored: dict | MoodCheckinSettings | None) -> MoodCheckinSettings:
