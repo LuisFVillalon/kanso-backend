@@ -162,6 +162,7 @@ def connect_feed(
     """Fetch and parse the calendar feed, then store its URL encrypted, creating or replacing the connection.
 
     time_zone, an IANA zone, is the one the feed's all-day items are due in.
+    It is stored only when the connection has none yet, so a reconnect keeps it.
 
     Raises a CanvasError (nothing is stored) if the link isn't a Canvas
     calendar feed, Canvas doesn't know it, it can't be reached or read, or
@@ -209,7 +210,8 @@ def _store_feed(
     row.token_last4 = feed.last4
     row.canvas_user_id = None
     row.canvas_user_name = None
-    row.time_zone = time_zone
+    if row.time_zone is None:
+        row.time_zone = time_zone
     row.token_expires_at = None
     row.status = "active"
     row.last_error_at = None

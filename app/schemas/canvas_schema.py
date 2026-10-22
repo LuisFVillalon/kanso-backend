@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, SecretStr
@@ -122,6 +122,8 @@ class CanvasFeedItem(CanvasItem):
     # Due on a day with no time: due_at is 11:59:59 pm (for an assignment) or
     # midnight that day in the connection's time_zone.
     all_day: bool = False
+    # The day an all-day item falls on; null otherwise.
+    day: date | None = None
     # Can be added to tasks: only assignments, which tasks follow by
     # canvas_assignment_id.
     linkable: bool = False

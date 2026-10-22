@@ -284,7 +284,8 @@ def feed_items(entries: list[FeedEntry], tz: ZoneInfo) -> list[CanvasFeedItem]:
             items.append(entry.item)
             continue
         at = time(23, 59, 59) if entry.item.kind == "assignment" else time()
-        items.append(entry.item.model_copy(update={"due_at": datetime.combine(entry.day, at, tzinfo=tz)}))
+        due_at = datetime.combine(entry.day, at, tzinfo=tz)
+        items.append(entry.item.model_copy(update={"due_at": due_at, "day": entry.day}))
     return items
 
 
