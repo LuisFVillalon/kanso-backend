@@ -1,7 +1,7 @@
 """add Canvas calendar feed connections
 
-Revision ID: e0f4a5b6c7d8
-Revises: d9e3f4a5b6c7
+Revision ID: f1a5b6c7d8e9
+Revises: e0f4a5b6c7d8
 Create Date: 2026-10-22 00:00:00.000000
 
 A Canvas connection can now be a user's private calendar feed link instead
@@ -24,8 +24,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = 'e0f4a5b6c7d8'
-down_revision: Union[str, Sequence[str], None] = 'd9e3f4a5b6c7'
+revision: str = 'f1a5b6c7d8e9'
+down_revision: Union[str, Sequence[str], None] = 'e0f4a5b6c7d8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -22,8 +22,19 @@ def test_migrations_have_a_single_head():
     assert len(heads) == 1, f"Multiple Alembic heads {heads}; re-point the newest migration's down_revision."
 
 
+def test_migration_revision_ids_are_unique():
+    # Alembic only warns on a reused id and keeps one of the files, so the head check alone misses it.
+    revisions = [_load_path(path).revision for path in (ROOT / "alembic" / "versions").glob("*.py")]
+    duplicates = sorted({revision for revision in revisions if revisions.count(revision) > 1})
+    assert not duplicates, f"Alembic revision ids used more than once {duplicates}; give the newest migration a new id."
+
+
 def _load_migration(name: str):
-    path = next((ROOT / "alembic" / "versions").glob(f"*_{name}.py"))
+    return _load_path(next((ROOT / "alembic" / "versions").glob(f"*_{name}.py")))
+
+
+def _load_path(path: Path):
+    name = path.stem
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
