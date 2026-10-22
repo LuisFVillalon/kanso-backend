@@ -115,6 +115,25 @@ def test_delete_keep_on_a_middle_task_unlinks_its_children_with_their_own_subtas
     assert root["id"] in tasks
 
 
+def test_trashed_tasks_name_their_parent_whether_live_or_trashed(client):
+    root, middle, leaf, below_leaf = _tree(client)
+    note = client.post("/create-note", json={"title": "Lecture notes"}).json()
+
+    assert _delete(client, leaf["id"]).status_code == 200
+    assert _delete(client, root["id"], linked="keep").status_code == 200
+    assert client.delete(f"/del-note/{note['id']}").status_code == 200
+
+    resp = client.get("/get-trash")
+    assert resp.status_code == 200, resp.text
+    parents = {(i["kind"], i["id"]): i["parent_task"] for i in resp.json()}
+    assert parents == {
+        ("task", leaf["id"]): {"id": middle["id"], "title": "Middle"},
+        ("task", below_leaf["id"]): {"id": leaf["id"], "title": "Leaf"},
+        ("task", root["id"]): None,
+        ("note", note["id"]): None,
+    }
+
+
 # ── Archive ──────────────────────────────────────────────────────────────────
 
 

@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.schemas.task_schema import TaskParent
+
 TrashKind = Literal["task", "note", "tag", "habit"]
 
 
@@ -17,3 +19,5 @@ class TrashItem(BaseModel):
     # Tasks only: the parent it was a subtask of, so subtasks deleted along
     # with their parent can be shown under it.
     parent_task_id: int | None = None
+    # Tasks only: that parent's id and title, whether it is live or in the trash too.
+    parent_task: TaskParent | None = None
