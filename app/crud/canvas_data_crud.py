@@ -268,8 +268,16 @@ def fetch_feed(feed: CanvasFeed) -> list[FeedEntry]:
     return [_feed_entry(feed.base_url, event) for event in feed.events()]
 
 
+def feed_zone(connection: CanvasConnection) -> ZoneInfo:
+    """The zone a feed's all-day items are due in: the one stored when it was connected, else UTC."""
+    return ZoneInfo(connection.time_zone or "UTC")
+
+
 def feed_items(entries: list[FeedEntry], tz: ZoneInfo) -> list[CanvasFeedItem]:
-    """The feed's items with every due_at set: an all-day assignment is due at 11:59:59 pm in tz, anything else at 0:00."""
+    """The feed's items with every due_at set: an all-day assignment is due at 11:59:59 pm in tz, anything else at 0:00.
+
+    tz is the connection's feed_zone, so the overview and the sync give the same due_at whatever the caller's zone.
+    """
     items = []
     for entry in entries:
         if entry.day is None:
@@ -281,7 +289,7 @@ def feed_items(entries: list[FeedEntry], tz: ZoneInfo) -> list[CanvasFeedItem]:
 
 
 def feed_upcoming(entries: list[FeedEntry], tz: ZoneInfo, start: datetime, end: datetime) -> list[CanvasFeedItem]:
-    """The feed's items due in [start, end), soonest first, like the overview's upcoming list."""
+    """The feed's items due in [start, end), soonest first, like the overview's upcoming list. tz as for feed_items."""
     upcoming = [item for item in feed_items(entries, tz) if start <= item.due_at < end]
     upcoming.sort(key=lambda item: (item.due_at, item.id))
     return upcoming

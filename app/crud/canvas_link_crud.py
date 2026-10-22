@@ -23,8 +23,10 @@ read, the error is raised instead.
 
 With a calendar feed connection, sync() reads the feed once (sharing the
 overview's cache) and matches each open task that follows an assignment by
-its feed UID, event-assignment-<canvas_assignment_id>. Only due dates sync: a feed has no submissions, so
-submitted is always false. A task whose item isn't in the feed comes back
+its feed UID, event-assignment-<canvas_assignment_id>. Only due dates sync:
+a feed has no submissions, so submitted is always false. All-day items are
+due in the connection's time_zone, whatever the caller's. A task whose item
+isn't in the feed, or whose link is on another school's host, comes back
 with synced=false and is left alone.
 """
 
@@ -41,6 +43,7 @@ from app.crud import canvas_data_crud, canvas_sample
 from app.crud.base import archived_filter, deleted_filter
 from app.crud.canvas_crud import get_connection
 from app.crud.canvas_data_crud import CanvasNotConnected, canvas_url
+from app.models.canvas_connection_model import CanvasConnection
 from app.models.task_model import Task as TaskModel
 from app.schemas.canvas_schema import CanvasAssignment, CanvasItem, CanvasLinkedTaskSync
 
@@ -108,7 +111,7 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
     """
     connection = get_connection(db, user_id)
     if connection is not None and connection.connection_type == "feed":
-        return _sync_feed(db, user_id, zone, now, refresh)
+        return _sync_feed(db, user_id, connection, zone, now, refresh)
     links = [(t.id, t.canvas_assignment_id, t.canvas_html_url) for t in _open_linked_tasks(db, user_id)]
     if not links:
         return {"fetched_at": now, "results": []}
@@ -164,21 +167,28 @@ def _feed_uid(task: TaskModel) -> str:
     return f"event-assignment-{task.canvas_assignment_id}"
 
 
-def _sync_feed(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool) -> dict:
+def _sync_feed(
+    db: Session, user_id: str, connection: CanvasConnection, zone: ZoneInfo, now: datetime, refresh: bool
+) -> dict:
     """sync() against the calendar feed. See the module docstring."""
+    base_url = connection.base_url
     links = [(t.id, _feed_uid(t)) for t in _open_linked_tasks(db, user_id)]
     if not links:
         return {"fetched_at": now, "results": []}
     # The feed is read before any task changes: read() commits the session.
     result = canvas_data_crud.read(db, user_id, "feed", (), canvas_data_crud.fetch_feed, now, refresh=refresh)
-    items = {item.uid: item for item in canvas_data_crud.feed_items(result.data, zone)}
+    feed_zone = canvas_data_crud.feed_zone(connection)
+    items = {item.uid: item for item in canvas_data_crud.feed_items(result.data, feed_zone)}
 
     results = []
     tasks = {t.id: t for t in _open_linked_tasks(db, user_id, [task_id for task_id, _ in links])}
     for task_id, uid in links:
         task = tasks.get(task_id)
         item = items.get(uid)
-        if task is None or item is None or _feed_uid(task) != uid:
+        if (
+            task is None or item is None or _feed_uid(task) != uid
+            or (task.canvas_html_url is not None and canvas_url(base_url, task.canvas_html_url) is None)
+        ):
             results.append(_unsynced(task_id))
         else:
             results.append(_apply(task, item, zone))

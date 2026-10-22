@@ -12,6 +12,7 @@ whose it is, so the Canvas account columns become nullable.
   canvas_connections.connection_type  VARCHAR(16)  NOT NULL DEFAULT 'token' — "token" or "feed"
   canvas_connections.canvas_user_id   now nullable — NULL for a feed
   canvas_connections.canvas_user_name now nullable — NULL for a feed
+  canvas_connections.time_zone        TEXT nullable — the zone a feed's all-day items are due in
 
 No table is added, so Row Level Security is unchanged.
 """
@@ -34,11 +35,13 @@ def upgrade() -> None:
     )
     op.alter_column('canvas_connections', 'canvas_user_id', existing_type=sa.BigInteger(), nullable=True)
     op.alter_column('canvas_connections', 'canvas_user_name', existing_type=sa.Text(), nullable=True)
+    op.add_column('canvas_connections', sa.Column('time_zone', sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
     # Feed connections have no Canvas account, so they can't survive the NOT NULLs.
     op.execute("DELETE FROM canvas_connections WHERE connection_type = 'feed'")
+    op.drop_column('canvas_connections', 'time_zone')
     op.alter_column('canvas_connections', 'canvas_user_name', existing_type=sa.Text(), nullable=False)
     op.alter_column('canvas_connections', 'canvas_user_id', existing_type=sa.BigInteger(), nullable=False)
     op.drop_column('canvas_connections', 'connection_type')

@@ -69,6 +69,7 @@ def connection_out(row: CanvasConnection | None, now: datetime) -> CanvasConnect
         feed_url_masked=canvas_feed.masked(row.base_url, row.token_last4) if feed else None,
         canvas_user_id=row.canvas_user_id,
         canvas_user_name=row.canvas_user_name,
+        time_zone=row.time_zone,
         token_expires_at=row.token_expires_at,
         hidden_course_ids=row.hidden_course_ids or [],
         created_at=row.created_at,
@@ -146,6 +147,7 @@ def _store(
     row.token_last4 = token[-4:]
     row.canvas_user_id = account["id"]
     row.canvas_user_name = account["name"]
+    row.time_zone = None
     row.token_expires_at = expires_at
     row.status = "active"
     row.last_error_at = None
@@ -154,8 +156,12 @@ def _store(
     return row
 
 
-def connect_feed(db: Session, user_id: str, feed_url: str, allow_account_change: bool = False) -> CanvasConnection:
+def connect_feed(
+    db: Session, user_id: str, feed_url: str, time_zone: str = "UTC", allow_account_change: bool = False
+) -> CanvasConnection:
     """Fetch and parse the calendar feed, then store its URL encrypted, creating or replacing the connection.
+
+    time_zone, an IANA zone, is the one the feed's all-day items are due in.
 
     Raises a CanvasError (nothing is stored) if the link isn't a Canvas
     calendar feed, Canvas doesn't know it, it can't be reached or read, or
@@ -171,14 +177,19 @@ def connect_feed(db: Session, user_id: str, feed_url: str, allow_account_change:
 
     encrypted = crypto.encrypt(feed.url, user_id)
     try:
-        return _store_feed(db, user_id, feed, encrypted, allow_account_change)
+        return _store_feed(db, user_id, feed, encrypted, time_zone, allow_account_change)
     except IntegrityError:
         db.rollback()
-        return _store_feed(db, user_id, feed, encrypted, allow_account_change)
+        return _store_feed(db, user_id, feed, encrypted, time_zone, allow_account_change)
 
 
 def _store_feed(
-    db: Session, user_id: str, feed: canvas_feed.FeedUrl, encrypted: crypto.Encrypted, allow_account_change: bool
+    db: Session,
+    user_id: str,
+    feed: canvas_feed.FeedUrl,
+    encrypted: crypto.Encrypted,
+    time_zone: str,
+    allow_account_change: bool,
 ) -> CanvasConnection:
     row = get_connection(db, user_id)
     account_changed = row is not None and row.base_url != feed.base_url
@@ -198,6 +209,7 @@ def _store_feed(
     row.token_last4 = feed.last4
     row.canvas_user_id = None
     row.canvas_user_name = None
+    row.time_zone = time_zone
     row.token_expires_at = None
     row.status = "active"
     row.last_error_at = None

@@ -166,13 +166,17 @@ class _FeedLinkRoute(APIRoute):
 
 def connect_canvas_feed(
     body: CanvasFeedConnect,
+    tz: str = Query("UTC", description="The IANA time zone the feed's all-day items are due in."),
     current_user: UserInfo = Depends(_real_user),
     db: Session = Depends(get_db),
 ):
     """Fetch and parse the calendar feed, then store its link encrypted. On failure nothing changes."""
+    zone = require_time_zone(tz)
     _canvas_call_limiter.check(current_user.id)
     try:
-        row = connect_feed(db, current_user.id, body.feed_url.get_secret_value(), body.allow_account_change)
+        row = connect_feed(
+            db, current_user.id, body.feed_url.get_secret_value(), zone.key, body.allow_account_change
+        )
     except (CanvasError, crypto.EncryptionKeyError) as exc:
         raise _canvas_http_error(exc) from None
     canvas_cache.evict_user(current_user.id)
@@ -288,7 +292,7 @@ def read_canvas_overview(
     connection = get_connection(db, current_user.id)
     if connection is not None and connection.connection_type == "feed":
         result = _read(db, current_user, "feed", (), canvas_data_crud.fetch_feed, refresh=refresh)
-        upcoming = canvas_data_crud.feed_upcoming(result.data, zone, start, end)
+        upcoming = canvas_data_crud.feed_upcoming(result.data, canvas_data_crud.feed_zone(connection), start, end)
         return CanvasOverviewOut(
             **_freshness(result), start=start, end=end, missing=[], recently_graded=[],
             upcoming=[item for item in upcoming if item.course_id not in result.hidden_course_ids],

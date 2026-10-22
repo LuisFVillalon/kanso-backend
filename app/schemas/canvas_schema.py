@@ -69,6 +69,8 @@ class CanvasConnectionOut(BaseModel):
     # The Canvas account; null for a feed.
     canvas_user_id: int | None = None
     canvas_user_name: str | None = None
+    # The IANA zone a feed's all-day items are due in; null for a token.
+    time_zone: str | None = None
     token_expires_at: datetime | None = None
     hidden_course_ids: list[int] = []
     created_at: datetime | None = None
@@ -118,7 +120,7 @@ class CanvasFeedItem(CanvasItem):
     # The feed item's UID (e.g. "event-assignment-123").
     uid: str
     # Due on a day with no time: due_at is 11:59:59 pm (for an assignment) or
-    # midnight that day in the caller's time zone.
+    # midnight that day in the connection's time_zone.
     all_day: bool = False
     # Can be added to tasks: only assignments, which tasks follow by
     # canvas_assignment_id.

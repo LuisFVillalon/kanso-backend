@@ -35,6 +35,9 @@ class CanvasConnection(Base):
     # knows the feed (it was reset); "error" while
     # Canvas can't be reached.
     status = Column(String(16), nullable=False, default="active")
+    # The IANA zone a feed's all-day items are due in, set when the feed is
+    # connected; NULL for a token.
+    time_zone = Column(Text, nullable=True)
     # Canvas course ids the user unticked under "Courses to show".
     hidden_course_ids = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -111,8 +111,8 @@ def feed(canvas):
 
 @pytest.fixture
 def feed_connected(client, feed):
-    """client, connected with the calendar feed, with the connect fetch forgotten."""
-    response = client.put("/canvas/connection/feed", json={"feed_url": FEED_URL})
+    """client, connected with the calendar feed in Los Angeles, with the connect fetch forgotten."""
+    response = client.put("/canvas/connection/feed", params={"tz": "America/Los_Angeles"}, json={"feed_url": FEED_URL})
     assert response.status_code == 200, response.text
     feed.requests.clear()
     return client
@@ -278,6 +278,8 @@ def test_connecting_a_feed_stores_only_ciphertext_and_returns_a_masked_status(cl
     assert body["token_last4"] == "wxyz"
     assert body["feed_url_masked"] == f"{BASE_URL}/feeds/calendars/user_…wxyz.ics"
     assert body["canvas_user_id"] is None and body["canvas_user_name"] is None
+    # Without tz, all-day items are due in UTC.
+    assert body["time_zone"] == "UTC"
     assert body["capabilities"] == {
         "upcoming": True, "missing": False, "recently_graded": False, "courses": False, "modules": False,
         "assignments": False, "announcements": False, "link_tasks": True, "submission_status": False,
@@ -401,14 +403,18 @@ def test_a_host_that_does_not_serve_a_calendar_is_refused(client, db, feed):
 
 def test_a_feed_replaces_a_token_for_the_same_school_and_keeps_settings(connected, db, feed):
     assert connected.patch("/canvas/connection", json={"hidden_course_ids": [12]}).status_code == 200
-    body = connected.put("/canvas/connection/feed", json={"feed_url": FEED_URL}).json()
+    body = connected.put(
+        "/canvas/connection/feed", params={"tz": "America/New_York"}, json={"feed_url": FEED_URL}
+    ).json()
     assert body["connection_type"] == "feed"
+    assert body["time_zone"] == "America/New_York"
     assert body["hidden_course_ids"] == [12]
     # And a token replaces the feed again without confirmation.
     body = connected.put("/canvas/connection", json={"base_url": BASE_URL, "token": TOKEN}).json()
     assert body["connection_type"] == "token"
     assert body["canvas_user_id"] == 42
     assert body["feed_url_masked"] is None
+    assert body["time_zone"] is None
     assert body["hidden_course_ids"] == [12]
 
 
@@ -492,7 +498,7 @@ def test_the_overview_lists_the_feeds_next_week(feed_connected, feed):
         "uid": "event-assignment-101", "all_day": False, "linkable": True,
     }
     assert datetime.fromisoformat(problem_set["due_at"]) == SOON.replace(microsecond=0)
-    # An all-day assignment is due at 11:59:59 pm in the caller's time zone, as Canvas stores 11:59 pm.
+    # An all-day assignment is due at 11:59:59 pm in the connection's time zone, as Canvas stores 11:59 pm.
     assert speech["all_day"] is True
     assert datetime.fromisoformat(speech["due_at"]) == datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
     # Only assignments can be added to tasks.
@@ -614,6 +620,45 @@ def test_a_token_linked_all_day_assignment_keeps_its_edited_due_date_on_the_feed
     result = _sync(feed_connected)["results"][0]
     assert result["synced"] is True and result["due_changed"] is False
     assert _task(db, task["id"]).due_date.date().isoformat() == edited
+
+
+def test_an_unknown_feed_time_zone_is_refused_before_fetching(client, db, feed):
+    response = client.put("/canvas/connection/feed", params={"tz": "Mars/Olympus"}, json={"feed_url": FEED_URL})
+    assert response.status_code == 422
+    assert CODE not in response.text
+    assert feed.requests == []
+    assert db.query(CanvasConnection).count() == 0
+
+
+def test_all_day_items_keep_one_due_at_whatever_the_callers_zone(feed_connected, db):
+    for tz in ("America/New_York", "Asia/Tokyo"):
+        items = feed_connected.get("/canvas/overview", params={"tz": tz}).json()["upcoming"]
+        speech = next(i for i in items if i["uid"] == "event-assignment-102")
+        assert datetime.fromisoformat(speech["due_at"]) == datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
+
+    canvas_due = datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
+    edited = (ALL_DAY - timedelta(days=1)).isoformat()
+    task = feed_connected.post("/create-task", json={
+        "title": "Speech", "canvas_assignment_id": 102, "canvas_due_at": canvas_due.isoformat(), "due_date": edited,
+    }).json()
+    for tz in ("America/New_York", "Asia/Tokyo"):
+        response = feed_connected.post("/canvas/linked-tasks/sync", params={"tz": tz})
+        assert response.status_code == 200, response.text
+        result = response.json()["results"][0]
+        assert result["synced"] is True and result["due_changed"] is False
+        assert datetime.fromisoformat(result["due_at"]) == canvas_due
+        assert _task(db, task["id"]).due_date.date().isoformat() == edited
+
+
+def test_sync_leaves_tasks_linked_at_another_school_alone(feed_connected, db):
+    other = feed_connected.post("/create-task", json={
+        "title": "Other school", "canvas_assignment_id": 101,
+        "canvas_html_url": "https://canvas.ucsd.edu/courses/11/assignments/101", "due_date": "2030-01-01",
+    }).json()
+    result = _sync(feed_connected)["results"][0]
+    assert result == {"task_id": other["id"], "synced": False, "submitted": False, "due_at": None,
+                      "due_changed": False}
+    assert _task(db, other["id"]).due_date.date().isoformat() == "2030-01-01"
 
 
 def test_sync_without_linked_tasks_does_not_fetch_the_feed(feed_connected, feed):
