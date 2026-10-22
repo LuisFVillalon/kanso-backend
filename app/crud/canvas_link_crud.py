@@ -43,9 +43,11 @@ from sqlalchemy.orm import Session
 
 from app.core.canvas_client import CanvasForbidden, CanvasNotFound, CanvasRateLimited, CanvasUnavailable
 from app.crud import canvas_data_crud, canvas_sample
-from app.crud.base import archived_filter, deleted_filter
 from app.crud.canvas_crud import get_connection
-from app.crud.canvas_data_crud import CanvasNotConnected, canvas_url
+from app.crud.canvas_data_crud import CanvasNotConnected
+from app.crud.canvas_fetch import feed_items, feed_zone, fetch_assignments, fetch_feed
+from app.crud.canvas_normalize import canvas_url
+from app.crud.task_rules import open_task_filter
 from app.models.canvas_connection_model import CanvasConnection
 from app.models.task_model import Task as TaskModel
 from app.schemas.canvas_schema import CanvasAssignment, CanvasFeedItem, CanvasItem, CanvasLinkedTaskSync
@@ -59,9 +61,7 @@ def _open_linked_tasks(db: Session, user_id: str, task_ids: list[int] | None = N
     q = db.query(TaskModel).filter(
         TaskModel.user_id == user_id,
         TaskModel.canvas_assignment_id.is_not(None),
-        TaskModel.completed.is_not(True),
-        archived_filter(TaskModel, False),
-        deleted_filter(TaskModel, False),
+        open_task_filter(),
     )
     if task_ids is not None:
         q = q.filter(TaskModel.id.in_(task_ids))
@@ -155,7 +155,7 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
     for course_id in courses:
         try:
             result = canvas_data_crud.read(
-                db, user_id, "assignments", (course_id,), canvas_data_crud.fetch_assignments(course_id), now,
+                db, user_id, "assignments", (course_id,), fetch_assignments(course_id), now,
                 refresh=refresh,
             )
         except (CanvasNotFound, CanvasForbidden):
@@ -202,9 +202,8 @@ def _sync_feed(
     if not links:
         return {"fetched_at": now, "results": []}
     # The feed is read before any task changes: read() commits the session.
-    result = canvas_data_crud.read(db, user_id, "feed", (), canvas_data_crud.fetch_feed, now, refresh=refresh)
-    feed_zone = canvas_data_crud.feed_zone(connection)
-    items = {item.uid: item for item in canvas_data_crud.feed_items(result.data, feed_zone)}
+    result = canvas_data_crud.read(db, user_id, "feed", (), fetch_feed, now, refresh=refresh)
+    items = {item.uid: item for item in feed_items(result.data, feed_zone(connection))}
 
     results = []
     tasks = {t.id: t for t in _open_linked_tasks(db, user_id, [task_id for task_id, _ in links])}

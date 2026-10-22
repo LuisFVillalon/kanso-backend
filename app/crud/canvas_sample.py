@@ -15,7 +15,7 @@ link to.
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from app.crud.canvas_data_crud import recently_graded
+from app.crud.canvas_fetch import recently_graded
 from app.schemas.canvas_schema import (
     CanvasAnnouncement,
     CanvasAssignment,

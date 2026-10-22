@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import ColumnElement, and_
 from sqlalchemy.orm import Session
 
 # Deleted tasks, notes, tags and habits stay restorable from the trash for
@@ -31,6 +32,11 @@ def get_owned[ModelT](
     return q.first()
 
 
+def get_user_row[ModelT](db: Session, model: type[ModelT], user_id: str) -> ModelT | None:
+    """The user's row of a one-row-per-user table (profile, settings, drawing, ...), if they have one."""
+    return db.query(model).filter(model.user_id == user_id).first()
+
+
 def list_owned[ModelT](db: Session, model: type[ModelT], user_id: str, archived: bool = False) -> list[ModelT]:
     """The user's active rows of a model, or only their archived ones when archived=True. Deleted rows are left out."""
     return (
@@ -40,14 +46,19 @@ def list_owned[ModelT](db: Session, model: type[ModelT], user_id: str, archived:
     )
 
 
-def deleted_filter(model, deleted: bool):
+def deleted_filter(model, deleted: bool) -> ColumnElement[bool]:
     """Filter clause selecting a model's deleted rows, or its live ones (deleted_at NULL)."""
     return model.deleted_at.isnot(None) if deleted else model.deleted_at.is_(None)
 
 
-def archived_filter(model, archived: bool):
+def archived_filter(model, archived: bool) -> ColumnElement[bool]:
     """Filter clause selecting a model's archived rows, or its active ones (archived_at NULL)."""
     return model.archived_at.isnot(None) if archived else model.archived_at.is_(None)
+
+
+def active_filter(model) -> ColumnElement[bool]:
+    """Filter clause selecting a model's active rows: neither archived nor deleted."""
+    return and_(archived_filter(model, False), deleted_filter(model, False))
 
 
 def set_archived[ModelT](

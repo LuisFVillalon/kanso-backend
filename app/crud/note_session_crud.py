@@ -1,9 +1,9 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.crud.base import get_owned
+from app.crud.base import active_filter, deleted_filter, get_owned
 from app.models.note_model import Note as NoteModel
 from app.models.note_session_model import NoteSession as NoteSessionModel
 
@@ -54,7 +54,7 @@ def get_total_time_seconds(db: Session, note_id: int, user_id: str) -> int:
             NoteSessionModel.note_id == note_id,
             NoteSessionModel.user_id == user_id,
             NoteSessionModel.ended_at.isnot(None),
-            NoteModel.deleted_at.is_(None),
+            deleted_filter(NoteModel, False),
         )
         .scalar()
     )
@@ -75,8 +75,7 @@ def _closed_seconds_by_active_note(db: Session, user_id: str, *conditions) -> li
         .filter(
             NoteSessionModel.user_id == user_id,
             NoteSessionModel.ended_at.isnot(None),
-            NoteModel.archived_at.is_(None),
-            NoteModel.deleted_at.is_(None),
+            active_filter(NoteModel),
             *conditions,
         )
         .group_by(NoteSessionModel.note_id)
@@ -90,7 +89,7 @@ def get_total_time_by_note(db: Session, user_id: str) -> list[tuple[int, int]]:
     return _closed_seconds_by_active_note(db, user_id)
 
 
-def get_time_by_note_for_date(db: Session, user_id: str, target_date) -> list[tuple[int, int]]:
+def get_time_by_note_for_date(db: Session, user_id: str, target_date: date) -> list[tuple[int, int]]:
     """Sum closed-session duration per active note for the user, for sessions that ended on target_date.
 
     Compares the UTC calendar date of ended_at, with no timezone offset
@@ -120,7 +119,7 @@ def get_time_by_note_for_datetime_range(
     )
 
 
-def get_time_by_note_for_range(db: Session, user_id: str, start_date, end_date) -> list[tuple[int, int]]:
+def get_time_by_note_for_range(db: Session, user_id: str, start_date: date, end_date: date) -> list[tuple[int, int]]:
     """Sum closed-session duration per active note for the user, for sessions ended within [start_date, end_date].
 
     Compares the UTC calendar date of ended_at against the given bounds — the
@@ -133,6 +132,26 @@ def get_time_by_note_for_range(db: Session, user_id: str, start_date, end_date) 
         func.date(NoteSessionModel.ended_at) >= start_date,
         func.date(NoteSessionModel.ended_at) <= end_date,
     )
+
+
+def get_time_by_note_for_local_days(
+    db: Session, user_id: str, start: date, end: date, utc_offset_minutes: int | None
+) -> list[tuple[int, int]]:
+    """Sum closed-session duration per active note for the user, for sessions ended within local days start..end.
+
+    utc_offset_minutes is the caller's offset as JS Date.getTimezoneOffset()
+    gives it (minutes to add to local time to reach UTC). With it, the
+    caller's local [start 00:00, end+1day 00:00) window becomes the matching
+    UTC instants (same offset convention as debrief_crud._local_day_bounds_utc);
+    without it, this falls back to get_time_by_note_for_range's UTC dates.
+    """
+    if utc_offset_minutes is None:
+        return get_time_by_note_for_range(db, user_id, start, end)
+    # ended_at is a naive UTC wall-clock timestamp.
+    offset = timedelta(minutes=utc_offset_minutes)
+    start_utc = datetime.combine(start, time.min) + offset
+    end_utc = datetime.combine(end, time.min) + timedelta(days=1) + offset
+    return get_time_by_note_for_datetime_range(db, user_id, start_utc, end_utc)
 
 
 def reap_stale_sessions(db: Session, user_id: str) -> int:

@@ -2,15 +2,12 @@ from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
+from app.crud.base import get_user_row
 from app.models.calendar_settings_model import CalendarSettings as CalendarSettingsModel
 
 
 def get_calendar_settings(db: Session, user_id: str) -> CalendarSettingsModel | None:
-    return (
-        db.query(CalendarSettingsModel)
-        .filter(CalendarSettingsModel.user_id == user_id)
-        .first()
-    )
+    return get_user_row(db, CalendarSettingsModel, user_id)
 
 
 def _default_term() -> tuple[date, date]:

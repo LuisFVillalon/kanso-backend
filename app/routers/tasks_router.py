@@ -3,18 +3,14 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_found
-from app.crud.task_crud import (
+from app.crud.task_crud import create_task, get_tasks, set_linked_tasks, update_task, update_task_status
+from app.crud.task_lifecycle_crud import (
     LinkedMode,
     archive_task,
-    create_task,
     delete_task,
-    get_tasks,
     purge_task,
     restore_task,
-    set_linked_tasks,
     unarchive_task,
-    update_task,
-    update_task_status,
 )
 from app.database.database import get_db
 from app.schemas.task_schema import LinkedTasks, LinkedTasksUpdate, Task, TaskCreate

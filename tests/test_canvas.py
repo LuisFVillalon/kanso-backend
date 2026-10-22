@@ -32,7 +32,7 @@ from app.crud.canvas_crud import get_connection
 from app.database.database import get_db
 from app.main import app
 from app.models.canvas_connection_model import CanvasConnection
-from app.routers import canvas_router
+from app.routers import canvas_connection_router
 from tests.conftest import USER_ID
 
 BASE_URL = "https://sdsu.instructure.com"
@@ -122,7 +122,7 @@ def canvas(monkeypatch):
     fake = FakeCanvas()
     monkeypatch.setattr(canvas_client, "transport", httpx.MockTransport(_over_the_network(fake)))
     monkeypatch.setattr(canvas_client, "_resolve", lambda host: [PUBLIC_IP])
-    monkeypatch.setattr(canvas_router, "_canvas_call_limiter", RateLimiter(max_calls=10, period=60))
+    monkeypatch.setattr(canvas_connection_router, "_canvas_call_limiter", RateLimiter(max_calls=10, period=60))
     return fake
 
 
@@ -588,7 +588,7 @@ def test_reconnecting_an_invalid_connection_makes_it_active_again(client, canvas
 
 
 def test_connect_and_test_are_rate_limited(client, canvas, monkeypatch):
-    monkeypatch.setattr(canvas_router, "_canvas_call_limiter", RateLimiter(max_calls=2, period=60))
+    monkeypatch.setattr(canvas_connection_router, "_canvas_call_limiter", RateLimiter(max_calls=2, period=60))
     assert _connect(client).status_code == 200
     assert client.post("/canvas/connection/test").status_code == 200
     assert client.post("/canvas/connection/test").status_code == 429

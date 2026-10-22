@@ -26,6 +26,7 @@ from app.core.canvas_client import (
     CanvasTokenInvalid,
     normalize_base_url,
 )
+from app.crud.base import get_user_row
 from app.models.canvas_connection_model import CanvasConnection
 from app.schemas.canvas_schema import CanvasCapabilities, CanvasConnectionOut
 from app.schemas.limits import CANVAS_TOKEN_MAX, CANVAS_URL_MAX
@@ -48,7 +49,7 @@ class CanvasAccountChanged(CanvasError):
 
 
 def get_connection(db: Session, user_id: str) -> CanvasConnection | None:
-    return db.query(CanvasConnection).filter(CanvasConnection.user_id == user_id).first()
+    return get_user_row(db, CanvasConnection, user_id)
 
 
 def expired(row: CanvasConnection, now: datetime) -> bool:

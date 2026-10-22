@@ -1,11 +1,12 @@
 from sqlalchemy.orm import Session
 
+from app.crud.base import get_user_row
 from app.models.drawing_model import Drawing
 from app.schemas.drawing_schema import DrawingSave
 
 
 def get_drawing(db: Session, user_id: str) -> Drawing | None:
-    return db.query(Drawing).filter(Drawing.user_id == user_id).first()
+    return get_user_row(db, Drawing, user_id)
 
 
 def upsert_drawing(db: Session, user_id: str, body: DrawingSave) -> Drawing:

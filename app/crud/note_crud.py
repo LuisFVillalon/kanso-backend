@@ -9,12 +9,12 @@ from app.models.note_model import Note as NoteModel
 from app.schemas.note_schema import NoteCreate, NoteUpdate
 
 
-def get_notes(db: Session, user_id: str, archived: bool = False):
+def get_notes(db: Session, user_id: str, archived: bool = False) -> list[NoteModel]:
     """Return the user's active notes, or only their archived ones when archived=True. Deleted notes are left out."""
     return list_owned(db, NoteModel, user_id, archived)
 
 
-def create_note(db: Session, note: NoteCreate, user_id: str):
+def create_note(db: Session, note: NoteCreate, user_id: str) -> NoteModel:
     """Create and persist a new note, auto-creating any new tags."""
     now = datetime.now(UTC)
     db_note = NoteModel(
@@ -31,7 +31,7 @@ def create_note(db: Session, note: NoteCreate, user_id: str):
     return db_note
 
 
-def update_note(db: Session, note_id: int, note: NoteUpdate, user_id: str):
+def update_note(db: Session, note_id: int, note: NoteUpdate, user_id: str) -> NoteModel | None:
     """Partially update a note's title, content, and tags. Returns None if not found."""
     db_note = get_owned(db, NoteModel, note_id, user_id)
     if not db_note:
@@ -52,26 +52,26 @@ def update_note(db: Session, note_id: int, note: NoteUpdate, user_id: str):
     return db_note
 
 
-def delete_note(db: Session, note_id: int, user_id: str):
+def delete_note(db: Session, note_id: int, user_id: str) -> NoteModel | None:
     """Move a note to the trash, keeping its editing sessions. Returns None if not found."""
     return move_to_trash(db, NoteModel, note_id, user_id)
 
 
-def archive_note(db: Session, note_id: int, user_id: str):
+def archive_note(db: Session, note_id: int, user_id: str) -> NoteModel | None:
     """Archive a note. Returns None if not found."""
     return set_archived(db, NoteModel, note_id, user_id, archived=True)
 
 
-def unarchive_note(db: Session, note_id: int, user_id: str):
+def unarchive_note(db: Session, note_id: int, user_id: str) -> NoteModel | None:
     """Restore an archived note. Returns None if not found."""
     return set_archived(db, NoteModel, note_id, user_id, archived=False)
 
 
-def restore_note(db: Session, note_id: int, user_id: str):
+def restore_note(db: Session, note_id: int, user_id: str) -> NoteModel | None:
     """Restore a note from the trash. Returns None if not in the trash."""
     return restore_from_trash(db, NoteModel, note_id, user_id)
 
 
-def purge_note(db: Session, note_id: int, user_id: str):
+def purge_note(db: Session, note_id: int, user_id: str) -> NoteModel | None:
     """Permanently delete a note in the trash, with its editing sessions. Returns None if not in the trash."""
     return purge_from_trash(db, NoteModel, note_id, user_id)

@@ -19,14 +19,15 @@ SUPABASE_SERVICE_ROLE_KEY — service-role key (Settings → API → service_rol
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
+from app.core.password_policy import check_new_password
 from app.core.rate_limit import RateLimiter
 from app.core.supabase_admin import delete_auth_user, update_auth_user, verify_password
 from app.crud.account_crud import delete_user_rows
 from app.database.database import get_db
+from app.schemas.account_schema import PasswordUpdateRequest
 
 router = APIRouter()
 
@@ -45,83 +46,7 @@ def _reject_demo_sandbox(user: UserInfo) -> None:
         )
 
 
-# ── Password policy (mirrors frontend passwordValidation.ts) ─────────────────
-
-_MIN_LENGTH = 12
-
-# Normalised (lowercase, no spaces) common/breached passwords.
-# Mirrors the BLACKLIST in passwordValidation.ts — keep the two in sync.
-_BLACKLIST: frozenset[str] = frozenset({
-    'password', 'password1', 'password12', 'password123', 'password1234',
-    'password12345', 'password123456',
-    'qwerty', 'qwerty123', 'qwertyuiop', 'qwertyuiop123',
-    '123456789012', '12345678901234', '1234567890',
-    'iloveyou1234', 'iloveyouforever',
-    'welcome1234', 'welcome123456',
-    'sunshine1234', 'princess1234',
-    'monkey123456', 'dragon123456',
-    'letmein12345', 'letmeinnow',
-    'football1234', 'baseball1234',
-    'superman1234', 'batman12345',
-    'trustno11234', 'master123456',
-    'admin12345678', 'administrator',
-    'passphrase123', 'correcthorse',
-    'mustang12345', 'shadow123456',
-    'michael12345', 'jessica12345',
-    'abc123456789', 'abcdefghijkl',
-    'hunter12345', 'ranger12345',
-    'starwars1234', 'starwars12345',
-    'liverpool1234', 'chelsea12345',
-    'harley12345', 'maverick1234',
-})
-
-
-def _check_password(password: str, email: str | None = None) -> None:
-    """
-    Raise HTTPException 422 if the password fails the NIST-aligned policy:
-      1. Minimum 12 characters
-      2. Not in the common-password blacklist
-      3. Does not contain the user's email local-part (≥ 4 chars)
-
-    Entropy scoring (zxcvbn equivalent) is enforced on the frontend only;
-    the backend focuses on the objective, stateless checks that cannot be
-    bypassed by the client.
-    """
-    if len(password) < _MIN_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Password must be at least {_MIN_LENGTH} characters.",
-        )
-
-    normalised = password.lower().replace(" ", "")
-    if normalised in _BLACKLIST:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Password is too common. Please choose something more unique.",
-        )
-
-    if email:
-        local_part = email.split("@")[0].lower()
-        if len(local_part) >= 4 and local_part in normalised:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Password must not contain your email address.",
-            )
-
-
 # ── Update password ───────────────────────────────────────────────────────────
-
-class PasswordUpdateRequest(BaseModel):
-    current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(max_length=256)
-
-    @field_validator("new_password")
-    @classmethod
-    def not_empty(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("Password cannot be blank.")
-        return v
-
 
 @router.post("/update-password", status_code=204)
 def update_password(
@@ -165,7 +90,7 @@ def update_password(
         )
     _password_check_limiter.release(current_user.id, attempt)
 
-    _check_password(body.new_password, current_user.email)
+    check_new_password(body.new_password, current_user.email)
 
     resp = update_auth_user(current_user.id, {"password": body.new_password})
     if resp.status_code not in (200, 204):
