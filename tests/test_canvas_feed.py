@@ -128,7 +128,10 @@ def _overview(client):
 
 @pytest.mark.parametrize(
     "raw",
-    [FEED_URL, f"  {FEED_URL}  ", f"https://SDSU.Instructure.com/feeds/calendars/user_{CODE}.ics", f"{FEED_URL}#x"],
+    [
+        FEED_URL, f"  {FEED_URL}  ", f"https://SDSU.Instructure.com/feeds/calendars/user_{CODE}.ics", f"{FEED_URL}#x",
+        f"webcal://{HOST}/feeds/calendars/user_{CODE}.ics", f"WebCal://{HOST}/feeds/calendars/user_{CODE}.ics",
+    ],
 )
 def test_feed_links_are_normalized(raw):
     feed = normalize_feed_url(raw)
@@ -141,7 +144,9 @@ def test_feed_links_are_normalized(raw):
     "raw",
     [
         f"http://{HOST}/feeds/calendars/user_{CODE}.ics",
-        f"webcal://{HOST}/feeds/calendars/user_{CODE}.ics",
+        f"webcals://{HOST}/feeds/calendars/user_{CODE}.ics",
+        f"ftp://{HOST}/feeds/calendars/user_{CODE}.ics",
+        f"webcal://10.0.0.5/feeds/calendars/user_{CODE}.ics",
         f"{HOST}/feeds/calendars/user_{CODE}.ics",
         f"https://10.0.0.5/feeds/calendars/user_{CODE}.ics",
         f"https://[::1]/feeds/calendars/user_{CODE}.ics",
@@ -320,6 +325,61 @@ def test_a_bad_feed_link_is_refused_without_fetching_or_echoing_it(client, db, f
     assert CODE not in response.text
     assert feed.requests == []
     assert get_connection(db, USER_ID) is None
+
+
+def test_a_webcal_link_connects_as_https(client, db, feed):
+    response = client.put("/canvas/connection/feed", json={"feed_url": f"webcal://{HOST}/feeds/calendars/user_{CODE}.ics"})
+    assert response.status_code == 200, response.text
+    assert response.json()["feed_url_masked"] == f"{BASE_URL}/feeds/calendars/user_…wxyz.ics"
+    [request] = feed.requests
+    assert request.url.scheme == "https" and request.url.host == PUBLIC_IP
+    assert decrypt_token(get_connection(db, USER_ID)) == FEED_URL
+
+
+def test_a_webcal_link_to_a_private_address_is_refused(client, feed, monkeypatch):
+    monkeypatch.setattr(canvas_client, "_resolve", lambda host: ["127.0.0.1"])
+    response = client.put("/canvas/connection/feed", json={"feed_url": f"webcal://{HOST}/feeds/calendars/user_{CODE}.ics"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "canvas_url_invalid"}
+    assert feed.requests == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"feed_url": {"url": FEED_URL}},
+        {"feed_url": [FEED_URL]},
+        {"feed_url": 42, "note": FEED_URL},
+        {"feed_url": FEED_URL, "allow_account_change": FEED_URL},
+        {"url": FEED_URL},
+        FEED_URL,
+        [FEED_URL],
+    ],
+)
+def test_a_malformed_body_never_echoes_the_link(client, db, feed, caplog, body):
+    caplog.set_level(logging.DEBUG)
+    response = client.put("/canvas/connection/feed", json=body)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "canvas_feed_url_invalid"}
+    assert CODE[-12:] not in response.text and CODE[-12:] not in caplog.text
+    assert feed.requests == []
+    assert get_connection(db, USER_ID) is None
+
+
+def test_rejected_links_are_never_echoed(client, feed, caplog):
+    caplog.set_level(logging.DEBUG)
+    for feed_url in [
+        f"http://{HOST}/feeds/calendars/user_{CODE}.ics",
+        f"https://10.0.0.5/feeds/calendars/user_{CODE}.ics",
+        f"{BASE_URL}/feeds/calendars/user_{CODE}.ics?x=1",
+        f"{BASE_URL}/feeds/calendars/user_{CODE}.ics" + "x" * 3000,
+        f"{BASE_URL}/feeds/calendars/user_{NEW_CODE[:-1]}Q.ics",
+    ]:
+        response = client.put("/canvas/connection/feed", json={"feed_url": feed_url})
+        assert response.status_code == 422
+        assert set(response.json()) == {"detail"} and isinstance(response.json()["detail"], str)
+        assert CODE[-12:] not in response.text and NEW_CODE[-12:-1] not in response.text
+    assert CODE[-12:] not in caplog.text and NEW_CODE[-12:-1] not in caplog.text
 
 
 def test_a_feed_canvas_does_not_know_is_not_stored(client, db, feed):

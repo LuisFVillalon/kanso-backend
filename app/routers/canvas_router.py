@@ -43,7 +43,9 @@ nothing is cached), canvas_course_hidden and canvas_course_not_found (404).
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
 
 from app.core import canvas_cache, crypto
@@ -141,7 +143,27 @@ def connect_canvas(
     return connection_out(row, datetime.now(UTC))
 
 
-@router.put("/connection/feed", response_model=CanvasConnectionOut)
+class _FeedLinkRoute(APIRoute):
+    """Answers a malformed body with a generic 422 canvas_feed_url_invalid.
+
+    FastAPI's validation errors echo the submitted value, which here may be
+    the feed link (e.g. sent as a non-string, or as the whole body).
+    """
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def route_handler(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="canvas_feed_url_invalid"
+                ) from None
+
+        return route_handler
+
+
 def connect_canvas_feed(
     body: CanvasFeedConnect,
     current_user: UserInfo = Depends(_real_user),
@@ -155,6 +177,12 @@ def connect_canvas_feed(
         raise _canvas_http_error(exc) from None
     canvas_cache.evict_user(current_user.id)
     return connection_out(row, datetime.now(UTC))
+
+
+router.add_api_route(
+    "/connection/feed", connect_canvas_feed, methods=["PUT"], response_model=CanvasConnectionOut,
+    route_class_override=_FeedLinkRoute,
+)
 
 
 @router.post("/connection/test", response_model=CanvasConnectionOut)

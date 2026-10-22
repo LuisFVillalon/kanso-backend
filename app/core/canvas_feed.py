@@ -12,7 +12,8 @@ part of any feed URL before the record is emitted.
 
 The link must be an https URL on a public DNS name with the path Canvas
 gives every user feed, /feeds/calendars/user_<code>.ics, and no query,
-port or credentials. It is fetched like the token client's requests
+port or credentials. Canvas often shows it as webcal://, which is read as
+https:// before the same checks. Error messages never include the link. It is fetched like the token client's requests
 (core/canvas_client.get_pinned): the name is resolved once and every address
 must be public, the request goes only to a checked address with TLS kept on
 the host name, redirects are never followed, and the answer is capped in
@@ -109,10 +110,13 @@ class FeedEvent:
 def normalize_feed_url(raw: str) -> FeedUrl:
     """Check a pasted calendar feed link and reduce it to https://host/feeds/calendars/user_<code>.ics.
 
-    Raises CanvasUrlInvalid for http, IP literals, ports and credentials,
+    A webcal:// link is taken as https://. Raises CanvasUrlInvalid for http
+    and other schemes, IP literals, ports and credentials,
     and CanvasFeedUrlInvalid for any other https address.
     """
     value = raw.strip()
+    if value[:9].lower() == "webcal://":
+        value = f"https://{value[9:]}"
     try:
         parts = urlsplit(value)
     except ValueError:
