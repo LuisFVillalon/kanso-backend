@@ -29,13 +29,6 @@ def _ids(resp):
     return {row["id"] for row in resp.json()}
 
 
-def _link_directly(db, child_id, parent_id):
-    """Link a task below another straight in the database, as trees deeper
-    than the one-level rule could be saved before it existed."""
-    db.get(Task, child_id).parent_task_id = parent_id
-    db.commit()
-
-
 @pytest.mark.parametrize("kind", KINDS)
 def test_new_rows_are_active(client, kind):
     assert _create(client, kind)["archived_at"] is None
@@ -111,11 +104,10 @@ def test_delete_moves_archived_rows_to_the_trash(client, kind):
     assert _ids(client.get(list_path, params={"archived": "true"})) == {row["id"]}
 
 
-def test_archiving_a_task_cascades_to_its_subtasks(client, db):
+def test_archiving_a_task_cascades_to_its_subtasks(client):
     parent = _create(client, "task", title="Parent")
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
-    grandchild = _create(client, "task", title="Grandchild")
-    _link_directly(db, grandchild["id"], child["id"])
+    grandchild = _create(client, "task", title="Grandchild", parent_task_id=child["id"])
     unrelated = _create(client, "task", title="Unrelated")
 
     client.patch(f"/archive-task/{parent['id']}")
@@ -140,13 +132,12 @@ def test_restoring_a_task_keeps_subtasks_archived_on_their_own(client):
     assert _ids(client.get("/get-tasks", params={"archived": "true"})) == {archived_first["id"]}
 
 
-def test_restoring_a_subtask_restores_its_archived_ancestors_only(client, db):
+def test_restoring_a_subtask_restores_its_archived_ancestors_only(client):
     root = _create(client, "task", title="Root")
-    parent = _create(client, "task", title="Parent")
+    parent = _create(client, "task", title="Parent", parent_task_id=root["id"])
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
     sibling = _create(client, "task", title="Sibling", parent_task_id=parent["id"])
     uncle = _create(client, "task", title="Uncle", parent_task_id=root["id"])
-    _link_directly(db, parent["id"], root["id"])
 
     client.patch(f"/archive-task/{root['id']}")
     restored = client.patch(f"/unarchive-task/{child['id']}")

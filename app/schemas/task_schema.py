@@ -100,6 +100,15 @@ class TaskCreate(TaskBase):
         return v
 
 
+class TaskParent(BaseModel):
+    """The task directly above a linked task, enough to show it without fetching it."""
+
+    id: int
+    title: str
+
+    model_config = {"from_attributes": True}
+
+
 class Task(TaskBase):
     id: int
     created_date: datetime
@@ -113,6 +122,9 @@ class Task(TaskBase):
     # Set server-side: order among the parent's linked tasks, listed by
     # (position, id). NULL for top-level tasks.
     position: int | None = None
+    # Set server-side: the task parent_task_id points at, or null for a
+    # top-level task.
+    parent_task: TaskParent | None = None
     tags: VisibleTags = []
 
     model_config = {"from_attributes": True}

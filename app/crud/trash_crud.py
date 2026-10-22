@@ -17,13 +17,14 @@ regardless.
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.crud.base import TRASH_RETENTION, get_owned, trash_cutoff
 from app.models.habit_model import Habit
 from app.models.note_model import Note
 from app.models.tag_model import Tag
 from app.models.task_model import Task
+from app.schemas.task_schema import TaskParent
 from app.schemas.trash_schema import TrashItem
 
 TRASHABLE_MODELS = {"task": Task, "note": Note, "tag": Tag, "habit": Habit}
@@ -57,7 +58,10 @@ def get_trash(db: Session, user_id: str) -> list[TrashItem]:
     db.commit()
     items = []
     for k, model in TRASHABLE_MODELS.items():
-        rows = db.query(model).filter(model.user_id == user_id, model.deleted_at.isnot(None)).all()
+        query = db.query(model).filter(model.user_id == user_id, model.deleted_at.isnot(None))
+        if k == "task":
+            query = query.options(selectinload(Task.parent_task))
+        rows = query.all()
         items.extend(
             TrashItem(
                 kind=k,
@@ -66,6 +70,7 @@ def get_trash(db: Session, user_id: str) -> list[TrashItem]:
                 deleted_at=row.deleted_at,
                 purge_at=row.deleted_at + TRASH_RETENTION,
                 parent_task_id=row.parent_task_id if k == "task" else None,
+                parent_task=TaskParent.model_validate(row.parent_task) if k == "task" and row.parent_task else None,
             )
             for row in rows
         )

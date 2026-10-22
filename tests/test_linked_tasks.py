@@ -1,4 +1,4 @@
-"""Linked tasks: saving a parent's ordered links in one go, and the one-level, loop and archive guards."""
+"""Linked tasks: saving a parent's ordered links in one go, nesting to any depth, and the loop and archive guards."""
 
 import pytest
 
@@ -31,11 +31,12 @@ def _tasks(client, archived=False):
     return {t["id"]: t for t in resp.json()}
 
 
-def _link_directly(db, child_id, parent_id):
-    """Link a task below another straight in the database, as trees deeper
-    than the one-level rule could be saved before it existed."""
-    db.get(Task, child_id).parent_task_id = parent_id
-    db.commit()
+def _chain(client, n):
+    """n tasks, each linked under the one before it."""
+    tasks = [_create(client, title="Level 0")]
+    for level in range(1, n):
+        tasks.append(_create(client, title=f"Level {level}", parent_task_id=tasks[-1]["id"]))
+    return tasks
 
 
 # ── Saving links ─────────────────────────────────────────────────────────────
@@ -186,37 +187,6 @@ def test_invalid_bodies_are_422(client, children):
     assert _set_linked(client, parent["id"], children).status_code == 422
 
 
-def test_a_linked_task_cannot_have_linked_tasks(client):
-    parent = _create(client, title="Parent")
-    child = _create(client, title="Child", parent_task_id=parent["id"])
-    other = _create(client, title="Other")
-
-    assert _set_linked(client, child["id"], [{"id": other["id"]}]).status_code == 400
-    assert _set_linked(client, child["id"], [{"title": "Grandchild"}]).status_code == 400
-    assert client.post("/create-task", json={"title": "Grandchild", "parent_task_id": child["id"]}).status_code == 400
-    resp = client.put(f"/update-task/{other['id']}", json={"title": "Other", "parent_task_id": child["id"]})
-    assert resp.status_code == 400
-
-
-def test_a_task_with_linked_tasks_cannot_be_linked(client):
-    parent = _create(client, title="Parent")
-    _create(client, title="Child", parent_task_id=parent["id"])
-    other = _create(client, title="Other")
-
-    assert _set_linked(client, other["id"], [{"id": parent["id"]}]).status_code == 400
-    resp = client.put(f"/update-task/{parent['id']}", json={"title": "Parent", "parent_task_id": other["id"]})
-    assert resp.status_code == 400
-
-
-def test_archived_linked_tasks_count_toward_the_one_level_rule(client):
-    parent = _create(client, title="Parent")
-    child = _create(client, title="Child", parent_task_id=parent["id"])
-    client.patch(f"/archive-task/{child['id']}")
-    other = _create(client, title="Other")
-
-    assert _set_linked(client, other["id"], [{"id": parent["id"]}]).status_code == 400
-
-
 def test_loops_are_rejected(client):
     parent = _create(client, title="Parent")
     child = _create(client, title="Child", parent_task_id=parent["id"])
@@ -231,40 +201,19 @@ def test_loops_are_rejected(client):
     assert resp.status_code == 400
 
 
-def test_loops_through_deeper_legacy_trees_are_rejected(client, db):
-    root = _create(client, title="Root")
-    middle = _create(client, title="Middle", parent_task_id=root["id"])
-    leaf = _create(client, title="Leaf")
-    _link_directly(db, leaf["id"], middle["id"])
+def test_loops_through_deeper_trees_are_rejected(client):
+    root, middle, leaf = _chain(client, 3)
 
-    resp = client.put(f"/update-task/{root['id']}", json={"title": "Root", "parent_task_id": leaf["id"]})
-    assert resp.status_code == 400
-    assert "loop" in resp.json()["detail"]
+    for task, under in ((root, leaf), (root, middle), (middle, leaf)):
+        resp = client.put(f"/update-task/{task['id']}", json={"title": task["title"], "parent_task_id": under["id"]})
+        assert resp.status_code == 400
+        assert "loop" in resp.json()["detail"]
+        resp = _set_linked(client, under["id"], [{"id": task["id"]}])
+        assert resp.status_code == 400
+        assert "loop" in resp.json()["detail"]
 
-
-def test_resaving_a_legacy_middle_task_keeps_its_links(client, db):
-    root = _create(client, title="Root")
-    middle = _create(client, title="Middle", parent_task_id=root["id"])
-    leaf, other = _create(client, title="Leaf"), _create(client, title="Other")
-    _link_directly(db, leaf["id"], middle["id"])
-
-    body = _linked(client, middle["id"], [{"id": leaf["id"]}])
-    assert [c["id"] for c in body["children"]] == [leaf["id"]]
-    assert _set_linked(client, middle["id"], [{"id": leaf["id"]}, {"id": other["id"]}]).status_code == 400
-    assert _set_linked(client, middle["id"], [{"id": leaf["id"]}, {"title": "New"}]).status_code == 400
-
-
-def test_resaving_a_parent_whose_linked_task_has_its_own_keeps_it(client, db):
-    root = _create(client, title="Root")
-    middle = _create(client, title="Middle", parent_task_id=root["id"])
-    leaf = _create(client, title="Leaf")
-    _link_directly(db, leaf["id"], middle["id"])
-    nested = _create(client, title="Nested")
-    _create(client, title="Nested step", parent_task_id=nested["id"])
-
-    body = _linked(client, root["id"], [{"title": "New"}, {"id": middle["id"]}])
-    assert [c["title"] for c in body["children"]] == ["New", "Middle"]
-    assert _set_linked(client, root["id"], [{"id": middle["id"]}, {"id": nested["id"]}]).status_code == 400
+    tasks = _tasks(client)
+    assert [tasks[t["id"]]["parent_task_id"] for t in (root, middle, leaf)] == [None, root["id"], middle["id"]]
 
 
 def test_archived_parents_cannot_take_linked_tasks(client):
@@ -315,12 +264,98 @@ def test_update_keeps_the_position_when_the_parent_is_unchanged(client):
     assert resp.json()["position"] == 1
 
 
-def test_resaving_a_legacy_grandchild_under_its_parent_works(client, db):
-    root = _create(client, title="Root")
-    middle = _create(client, title="Middle", parent_task_id=root["id"])
-    leaf = _create(client, title="Leaf")
-    _link_directly(db, leaf["id"], middle["id"])
+def test_siblings_are_ordered_at_every_depth(client):
+    _, middle = _chain(client, 2)
+    first = _create(client, title="First", parent_task_id=middle["id"])
+    second = _create(client, title="Second", parent_task_id=middle["id"])
+    assert (first["position"], second["position"]) == (0, 1)
 
-    payload = {"title": "Leaf", "completed": True, "parent_task_id": middle["id"]}
-    resp = client.put(f"/update-task/{leaf['id']}", json=payload)
+    body = _linked(client, middle["id"], [{"id": second["id"]}, {"title": "Third"}, {"id": first["id"]}])
+
+    assert [(c["title"], c["position"]) for c in body["children"]] == [("Second", 0), ("Third", 1), ("First", 2)]
+
+
+# ── Nesting ──────────────────────────────────────────────────────────────────
+
+
+def test_linked_tasks_nest_to_any_depth(client):
+    root, child, grandchild = _chain(client, 3)
+    [great] = _linked(client, grandchild["id"], [{"title": "Great-grandchild"}])["children"]
+    deeper = _create(client, title="Deeper", parent_task_id=great["id"])
+
+    tasks = _tasks(client)
+    assert [tasks[t["id"]]["parent_task_id"] for t in (root, child, grandchild, great, deeper)] == [
+        None, root["id"], child["id"], grandchild["id"], great["id"]
+    ]
+    assert (tasks[great["id"]]["position"], tasks[deeper["id"]]["position"]) == (0, 0)
+
+
+def test_a_task_with_linked_tasks_moves_with_them(client):
+    root, middle, leaf = _chain(client, 3)
+    other_root, other_child = _chain(client, 2)
+
+    resp = client.put(f"/update-task/{middle['id']}", json={"title": "Level 1", "parent_task_id": other_child["id"]})
     assert resp.status_code == 200, resp.text
+    tasks = _tasks(client)
+    assert tasks[middle["id"]]["parent_task_id"] == other_child["id"]
+    assert tasks[leaf["id"]]["parent_task_id"] == middle["id"]
+
+    # Moving it back the other way, through the linked-tasks save.
+    body = _linked(client, root["id"], [{"id": middle["id"]}])
+    assert body["children"][0]["parent_task_id"] == root["id"]
+    tasks = _tasks(client)
+    assert tasks[leaf["id"]]["parent_task_id"] == middle["id"]
+    assert other_root["id"] in tasks
+
+
+def test_a_nested_task_stores_every_field_a_top_level_task_does(client):
+    _, child = _chain(client, 2)
+    fields = {
+        "title": "Draft outline",
+        "description": "Two pages, double spaced",
+        "category": "Essay",
+        "priority": 7,
+        "due_date": "2026-11-03",
+        "due_time": "17:30:00",
+        "estimated_time": 1.5,
+        "reminder_minutes": 45,
+        "canvas_assignment_id": 424242,
+        "canvas_html_url": "https://canvas.example.edu/courses/1/assignments/424242",
+        "canvas_due_at": "2026-11-04T06:59:00Z",
+        "tags": [SCHOOL],
+    }
+
+    created = _create(client, parent_task_id=child["id"], **fields)
+    stored = _tasks(client)[created["id"]]
+    for body in (created, stored):
+        assert body["parent_task_id"] == child["id"]
+        for name, value in fields.items():
+            if name == "tags":
+                assert [t["name"] for t in body["tags"]] == ["School"]
+            elif name != "canvas_due_at":
+                assert body[name] == value, name
+
+    updated = {**fields, "title": "Final outline", "priority": 8, "due_date": "2026-11-05"}
+    resp = client.put(f"/update-task/{created['id']}", json={**updated, "parent_task_id": child["id"]})
+    assert resp.status_code == 200, resp.text
+    stored = _tasks(client)[created["id"]]
+    assert (stored["title"], stored["priority"], stored["due_date"]) == ("Final outline", 8, "2026-11-05")
+    assert stored["canvas_assignment_id"] == 424242
+
+
+def test_tasks_name_their_parent(client):
+    root, child, grandchild = _chain(client, 3)
+    client.put(f"/update-task/{root['id']}", json={"title": "Renamed root"})
+    client.patch(f"/archive-task/{grandchild['id']}")
+
+    tasks = _tasks(client)
+    assert tasks[root["id"]]["parent_task"] is None
+    assert tasks[child["id"]]["parent_task"] == {"id": root["id"], "title": "Renamed root"}
+    # An archived task names its parent even though the parent is in the other list.
+    archived = _tasks(client, archived=True)
+    assert archived[grandchild["id"]]["parent_task"] == {"id": child["id"], "title": "Level 1"}
+
+    [new] = _linked(client, child["id"], [{"title": "New"}])["children"]
+    assert new["parent_task"] == {"id": child["id"], "title": "Level 1"}
+    created = _create(client, title="Created", parent_task_id=new["id"])
+    assert created["parent_task"] == {"id": new["id"], "title": "New"}

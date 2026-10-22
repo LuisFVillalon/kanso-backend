@@ -19,6 +19,15 @@ def _family(client, n=2):
     return parent, children
 
 
+def _tree(client):
+    """Root -> middle -> (leaf -> below leaf), the shape every nested test starts from."""
+    root = _create(client, title="Root")
+    middle = _create(client, title="Middle", parent_task_id=root["id"])
+    leaf = _create(client, title="Leaf", parent_task_id=middle["id"])
+    below_leaf = _create(client, title="Below leaf", parent_task_id=leaf["id"])
+    return root, middle, leaf, below_leaf
+
+
 def _tasks(client, archived=False):
     resp = client.get("/get-tasks", params={"archived": archived})
     assert resp.status_code == 200, resp.text
@@ -94,6 +103,37 @@ def test_restoring_a_parent_deleted_with_keep_leaves_its_old_linked_tasks_standa
     assert all(tasks[c["id"]]["parent_task_id"] is None for c in children)
 
 
+def test_delete_keep_on_a_middle_task_unlinks_its_children_with_their_own_subtasks(client):
+    root, middle, leaf, below_leaf = _tree(client)
+
+    assert _delete(client, middle["id"], linked="keep").status_code == 200
+
+    assert _trash_ids(client) == {middle["id"]}
+    tasks = _tasks(client)
+    assert (tasks[leaf["id"]]["parent_task_id"], tasks[leaf["id"]]["parent_task"]) == (None, None)
+    assert tasks[below_leaf["id"]]["parent_task_id"] == leaf["id"]
+    assert root["id"] in tasks
+
+
+def test_trashed_tasks_name_their_parent_whether_live_or_trashed(client):
+    root, middle, leaf, below_leaf = _tree(client)
+    note = client.post("/create-note", json={"title": "Lecture notes"}).json()
+
+    assert _delete(client, leaf["id"]).status_code == 200
+    assert _delete(client, root["id"], linked="keep").status_code == 200
+    assert client.delete(f"/del-note/{note['id']}").status_code == 200
+
+    resp = client.get("/get-trash")
+    assert resp.status_code == 200, resp.text
+    parents = {(i["kind"], i["id"]): i["parent_task"] for i in resp.json()}
+    assert parents == {
+        ("task", leaf["id"]): {"id": middle["id"], "title": "Middle"},
+        ("task", below_leaf["id"]): {"id": leaf["id"], "title": "Leaf"},
+        ("task", root["id"]): None,
+        ("note", note["id"]): None,
+    }
+
+
 # ── Archive ──────────────────────────────────────────────────────────────────
 
 
@@ -126,6 +166,36 @@ def test_archive_keep_unlinks_active_linked_tasks_and_archives_only_the_parent(c
     assert archived[archived_child["id"]]["parent_task_id"] == parent["id"]
 
 
+def test_archive_and_unarchive_reach_every_level(client):
+    root, middle, leaf, below_leaf = _tree(client)
+    on_its_own = _create(client, title="Archived on its own", parent_task_id=leaf["id"])
+    _archive(client, on_its_own["id"])
+
+    assert _archive(client, middle["id"]).status_code == 200
+    assert set(_tasks(client)) == {root["id"]}
+    assert {middle["id"], leaf["id"], below_leaf["id"]} <= set(_tasks(client, archived=True))
+
+    # Unarchiving the deepest task restores the archived chain above it.
+    assert client.patch(f"/unarchive-task/{below_leaf['id']}").status_code == 200
+    assert set(_tasks(client)) == {root["id"], middle["id"], leaf["id"], below_leaf["id"]}
+
+    _archive(client, middle["id"])
+    assert client.patch(f"/unarchive-task/{middle['id']}").status_code == 200
+    assert set(_tasks(client)) == {root["id"], middle["id"], leaf["id"], below_leaf["id"]}
+    assert set(_tasks(client, archived=True)) == {on_its_own["id"]}
+
+
+def test_archive_keep_on_a_middle_task_unlinks_its_children_with_their_own_subtasks(client):
+    root, middle, leaf, below_leaf = _tree(client)
+
+    assert _archive(client, middle["id"], linked="keep").status_code == 200
+
+    tasks = _tasks(client)
+    assert set(tasks) == {root["id"], leaf["id"], below_leaf["id"]}
+    assert tasks[leaf["id"]]["parent_task_id"] is None
+    assert tasks[below_leaf["id"]]["parent_task_id"] == leaf["id"]
+
+
 @pytest.mark.parametrize("call", [_delete, _archive])
 def test_an_unknown_linked_mode_is_rejected(client, call):
     parent, children = _family(client, n=1)
@@ -156,6 +226,18 @@ def test_with_linked_completes_the_parent_and_its_open_linked_tasks(client):
     # Already-done linked tasks keep their completion time; archived ones are left alone.
     assert tasks[done_child["id"]]["completed_date"] == done_before
     assert _tasks(client, archived=True)[archived_child["id"]]["completed"] is False
+
+
+def test_with_linked_completes_open_linked_tasks_at_every_depth(client):
+    root, middle, leaf, below_leaf = _tree(client)
+    archived = _create(client, title="Archived", parent_task_id=leaf["id"])
+    _archive(client, archived["id"])
+
+    assert _complete(client, middle["id"], with_linked="true").status_code == 200
+
+    tasks = _tasks(client)
+    assert [tasks[t["id"]]["completed"] for t in (root, middle, leaf, below_leaf)] == [False, True, True, True]
+    assert _tasks(client, archived=True)[archived["id"]]["completed"] is False
 
 
 def test_without_with_linked_only_the_parent_is_completed(client):
