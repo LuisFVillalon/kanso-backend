@@ -269,13 +269,13 @@ def fetch_feed(feed: CanvasFeed) -> list[FeedEntry]:
 
 
 def feed_items(entries: list[FeedEntry], tz: ZoneInfo) -> list[CanvasFeedItem]:
-    """The feed's items with every due_at set: an all-day assignment is due at 11:59 pm in tz, anything else at 0:00."""
+    """The feed's items with every due_at set: an all-day assignment is due at 11:59:59 pm in tz, anything else at 0:00."""
     items = []
     for entry in entries:
         if entry.day is None:
             items.append(entry.item)
             continue
-        at = time(23, 59) if entry.item.kind == "assignment" else time()
+        at = time(23, 59, 59) if entry.item.kind == "assignment" else time()
         items.append(entry.item.model_copy(update={"due_at": datetime.combine(entry.day, at, tzinfo=tz)}))
     return items
 
@@ -393,6 +393,7 @@ def _feed_entry(base_url: str, event: FeedEvent) -> FeedEntry:
         html_url=html_url,
         uid=event.uid,
         all_day=all_day,
+        linkable=event.kind == "assignment",
     )
     return FeedEntry(item=item, day=event.start if all_day else None)
 

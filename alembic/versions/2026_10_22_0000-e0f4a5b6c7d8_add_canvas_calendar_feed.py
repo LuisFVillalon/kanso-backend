@@ -1,4 +1,4 @@
-"""add Canvas calendar feed connections and tasks.canvas_uid
+"""add Canvas calendar feed connections
 
 Revision ID: e0f4a5b6c7d8
 Revises: d9e3f4a5b6c7
@@ -12,7 +12,6 @@ whose it is, so the Canvas account columns become nullable.
   canvas_connections.connection_type  VARCHAR(16)  NOT NULL DEFAULT 'token' — "token" or "feed"
   canvas_connections.canvas_user_id   now nullable — NULL for a feed
   canvas_connections.canvas_user_name now nullable — NULL for a feed
-  tasks.canvas_uid                    TEXT nullable — the feed item's UID a task follows
 
 No table is added, so Row Level Security is unchanged.
 """
@@ -35,18 +34,9 @@ def upgrade() -> None:
     )
     op.alter_column('canvas_connections', 'canvas_user_id', existing_type=sa.BigInteger(), nullable=True)
     op.alter_column('canvas_connections', 'canvas_user_name', existing_type=sa.Text(), nullable=True)
-    op.add_column('tasks', sa.Column('canvas_uid', sa.Text(), nullable=True))
-    op.create_index(
-        'ix_tasks_user_id_canvas_uid',
-        'tasks',
-        ['user_id', 'canvas_uid'],
-        postgresql_where=sa.text('canvas_uid IS NOT NULL'),
-    )
 
 
 def downgrade() -> None:
-    op.drop_index('ix_tasks_user_id_canvas_uid', table_name='tasks')
-    op.drop_column('tasks', 'canvas_uid')
     # Feed connections have no Canvas account, so they can't survive the NOT NULLs.
     op.execute("DELETE FROM canvas_connections WHERE connection_type = 'feed'")
     op.alter_column('canvas_connections', 'canvas_user_name', existing_type=sa.Text(), nullable=False)

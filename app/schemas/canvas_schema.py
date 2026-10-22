@@ -115,11 +115,14 @@ class CanvasItem(BaseModel):
 class CanvasFeedItem(CanvasItem):
     """An item from a calendar feed: no points or submission, but a UID."""
 
-    # The feed item's UID (e.g. "event-assignment-123"), which a task added from it follows.
+    # The feed item's UID (e.g. "event-assignment-123").
     uid: str
-    # Due on a day with no time: due_at is 11:59 pm (for an assignment) or
+    # Due on a day with no time: due_at is 11:59:59 pm (for an assignment) or
     # midnight that day in the caller's time zone.
     all_day: bool = False
+    # Can be added to tasks: only assignments, which tasks follow by
+    # canvas_assignment_id.
+    linkable: bool = False
 
 
 class CanvasAssignment(CanvasItem):

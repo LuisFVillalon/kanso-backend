@@ -3,7 +3,7 @@
 # ruff: noqa: F811
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -489,14 +489,16 @@ def test_the_overview_lists_the_feeds_next_week(feed_connected, feed):
         "id": 101, "kind": "assignment", "title": "Problem Set 6", "course_id": 11,
         "course_name": "CS 460-01 Fall 2026", "due_at": problem_set["due_at"], "points_possible": None,
         "html_url": f"{BASE_URL}/courses/11/assignments/101", "submission": None,
-        "uid": "event-assignment-101", "all_day": False,
+        "uid": "event-assignment-101", "all_day": False, "linkable": True,
     }
     assert datetime.fromisoformat(problem_set["due_at"]) == SOON.replace(microsecond=0)
-    # An all-day assignment is due at 11:59 pm in the caller's time zone.
+    # An all-day assignment is due at 11:59:59 pm in the caller's time zone, as Canvas stores 11:59 pm.
     assert speech["all_day"] is True
-    assert datetime.fromisoformat(speech["due_at"]) == datetime.combine(ALL_DAY, datetime.min.time().replace(
-        hour=23, minute=59), tzinfo=LA)
+    assert datetime.fromisoformat(speech["due_at"]) == datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
+    # Only assignments can be added to tasks.
+    assert speech["linkable"] is True
     assert office_hours["kind"] == "event"
+    assert office_hours["linkable"] is False and dentist["linkable"] is False
     assert office_hours["html_url"] == f"{BASE_URL}/calendar?include_contexts=course_11&event_id=55"
     # A link off the school's host is dropped.
     assert dentist["html_url"] is None and dentist["course_id"] is None
@@ -535,13 +537,11 @@ def test_token_only_routes_are_not_supported_for_a_feed(feed_connected, feed, ca
     assert canvas.requests == []
 
 
-# ── Tasks added from feed items ──────────────────────────────────────────────
+# ── Tasks added from feed assignments ────────────────────────────────────────
 
 def _add(client, item: dict, **fields):
-    body = {"title": item["title"], "canvas_uid": item["uid"], "canvas_html_url": item["html_url"],
+    body = {"title": item["title"], "canvas_assignment_id": item["id"], "canvas_html_url": item["html_url"],
             "canvas_due_at": item["due_at"], **fields}
-    if item["kind"] == "assignment":
-        body["canvas_assignment_id"] = item["id"]
     return client.post("/create-task", json=body)
 
 
@@ -556,47 +556,29 @@ def _task(db, task_id) -> Task:
     return db.get(Task, task_id)
 
 
-def test_feed_items_can_be_added_to_tasks_once(feed_connected):
+def test_feed_assignments_can_be_added_to_tasks_once(feed_connected):
     by_uid = {i["uid"]: i for i in _overview(feed_connected)["upcoming"]}
-    event = by_uid["event-calendar-event-55"]
-    response = _add(feed_connected, event)
+    assignment = by_uid["event-assignment-101"]
+    response = _add(feed_connected, assignment)
     assert response.status_code == 200, response.text
     task = response.json()
-    assert task["canvas_uid"] == "event-calendar-event-55"
-    assert task["canvas_assignment_id"] is None
-    assert task["canvas_html_url"] == event["html_url"]
+    assert task["canvas_assignment_id"] == 101
+    assert task["canvas_html_url"] == assignment["html_url"]
 
-    again = _add(feed_connected, event)
+    again = _add(feed_connected, assignment)
     assert again.status_code == 409
     assert again.json()["detail"] == {
         "code": "canvas_task_exists", "message": "An open task already follows this Canvas assignment.",
         "task_id": task["id"],
     }
-    # An assignment already followed by id (e.g. added while a token was connected) is taken too.
-    followed = feed_connected.post("/create-task", json={"title": "PS6", "canvas_assignment_id": 101})
-    assert followed.status_code == 200
-    assert _add(feed_connected, by_uid["event-assignment-101"]).status_code == 409
-
-
-def test_a_task_relinked_to_another_feed_item_is_checked(feed_connected):
-    first = _add(feed_connected, {"title": "x", "uid": "event-calendar-event-55", "html_url": None, "due_at": None,
-                                  "kind": "event"}).json()
-    other = feed_connected.post("/create-task", json={"title": "y"}).json()
-    response = feed_connected.put(f"/update-task/{other['id']}", json={"title": "y", "canvas_uid": first["canvas_uid"]})
-    assert response.status_code == 409
-    # Saving without the link fields keeps the link.
-    saved = feed_connected.put(f"/update-task/{first['id']}", json={"title": "renamed"}).json()
-    assert saved["canvas_uid"] == "event-calendar-event-55"
-    assert feed_connected.put(f"/update-task/{first['id']}", json={"title": "x", "canvas_uid": None}).json()[
-        "canvas_uid"] is None
 
 
 def test_sync_follows_the_feeds_due_dates_without_submission_status(feed_connected, db, feed):
     by_uid = {i["uid"]: i for i in _overview(feed_connected)["upcoming"]}
     added = _add(feed_connected, by_uid["event-assignment-101"]).json()
-    event = _add(feed_connected, by_uid["event-calendar-event-55"]).json()
     by_id = feed_connected.post("/create-task", json={"title": "Old", "canvas_assignment_id": 103}).json()
-    gone = feed_connected.post("/create-task", json={"title": "Gone", "canvas_uid": "event-assignment-999"}).json()
+    gone = feed_connected.post("/create-task", json={"title": "Gone", "canvas_assignment_id": 999}).json()
+    unlinked = feed_connected.post("/create-task", json={"title": "Mine"}).json()
 
     moved = SOON + timedelta(days=1, hours=3)
     feed.events = [e.replace(_ics_time(SOON), _ics_time(moved)) if "assignment-101" in e else e for e in feed.events]
@@ -606,7 +588,8 @@ def test_sync_follows_the_feeds_due_dates_without_submission_status(feed_connect
 
     canvas_cache.clear()
     results = {r["task_id"]: r for r in _sync(feed_connected)["results"]}
-    assert list(results) == sorted([added["id"], event["id"], by_id["id"], gone["id"]])
+    assert unlinked["id"] not in results
+    assert list(results) == sorted([added["id"], by_id["id"], gone["id"]])
     assert results[added["id"]]["synced"] is True
     assert results[added["id"]]["submitted"] is False
     assert results[added["id"]]["due_changed"] is True
@@ -614,21 +597,25 @@ def test_sync_follows_the_feeds_due_dates_without_submission_status(feed_connect
     task = _task(db, added["id"])
     assert task.due_date.date() == local.date()
     assert task.due_time.strftime("%H:%M") == local.strftime("%H:%M")
-    assert results[event["id"]]["synced"] is True and results[event["id"]]["due_changed"] is False
-    # A task following an assignment by id alone matches its feed item.
+    # A task following an assignment by id matches its feed item, event-assignment-<id>.
     assert results[by_id["id"]]["synced"] is True
     assert datetime.fromisoformat(results[by_id["id"]]["due_at"]) == FAR.replace(microsecond=0)
     assert results[gone["id"]] == {"task_id": gone["id"], "synced": False, "submitted": False, "due_at": None,
                                    "due_changed": False}
 
 
+def test_a_token_linked_all_day_assignment_keeps_its_edited_due_date_on_the_feed(feed_connected, db):
+    # Canvas's API gives an 11:59 pm due date as 23:59:59, which the feed sends as all-day.
+    canvas_due = datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
+    edited = (ALL_DAY - timedelta(days=1)).isoformat()
+    task = feed_connected.post("/create-task", json={
+        "title": "Speech", "canvas_assignment_id": 102, "canvas_due_at": canvas_due.isoformat(), "due_date": edited,
+    }).json()
+    result = _sync(feed_connected)["results"][0]
+    assert result["synced"] is True and result["due_changed"] is False
+    assert _task(db, task["id"]).due_date.date().isoformat() == edited
+
+
 def test_sync_without_linked_tasks_does_not_fetch_the_feed(feed_connected, feed):
     assert _sync(feed_connected)["results"] == []
     assert feed.requests == []
-
-
-def test_token_sync_ignores_tasks_that_only_follow_a_feed_item(connected, canvas):
-    connected.post("/create-task", json={"title": "x", "canvas_uid": "event-calendar-event-55"})
-    body = connected.post("/canvas/linked-tasks/sync", params={"tz": "UTC"}).json()
-    assert body["results"] == []
-    assert canvas.requests == []

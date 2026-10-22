@@ -22,9 +22,8 @@ or down partway through. If Canvas is busy or down before any course is
 read, the error is raised instead.
 
 With a calendar feed connection, sync() reads the feed once (sharing the
-overview's cache) and matches each open task that follows a feed item
-(canvas_uid) or an assignment (canvas_assignment_id, whose feed UID is
-event-assignment-<id>). Only due dates sync: a feed has no submissions, so
+overview's cache) and matches each open task that follows an assignment by
+its feed UID, event-assignment-<canvas_assignment_id>. Only due dates sync: a feed has no submissions, so
 submitted is always false. A task whose item isn't in the feed comes back
 with synced=false and is left alone.
 """
@@ -35,7 +34,6 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.canvas_client import CanvasForbidden, CanvasNotFound, CanvasRateLimited, CanvasUnavailable
@@ -50,19 +48,11 @@ MAX_SYNC_COURSES = 20
 _COURSE_PATH = re.compile(r"/courses/(\d+)(?:/|$)")
 
 
-def _open_linked_tasks(
-    db: Session, user_id: str, task_ids: list[int] | None = None, feed: bool = False
-) -> list[TaskModel]:
-    """The user's open (not completed, archived or deleted) tasks that follow a Canvas assignment.
-
-    With feed, also those that follow a calendar feed item.
-    """
-    follows = TaskModel.canvas_assignment_id.is_not(None)
-    if feed:
-        follows = or_(follows, TaskModel.canvas_uid.is_not(None))
+def _open_linked_tasks(db: Session, user_id: str, task_ids: list[int] | None = None) -> list[TaskModel]:
+    """The user's open (not completed, archived or deleted) tasks that follow a Canvas assignment."""
     q = db.query(TaskModel).filter(
         TaskModel.user_id == user_id,
-        follows,
+        TaskModel.canvas_assignment_id.is_not(None),
         TaskModel.completed.is_not(True),
         archived_filter(TaskModel, False),
         deleted_filter(TaskModel, False),
@@ -169,18 +159,14 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
     }
 
 
-def _feed_uid(task: TaskModel) -> str | None:
-    """The feed UID of the item a task follows."""
-    if task.canvas_uid is not None:
-        return task.canvas_uid
-    if task.canvas_assignment_id is not None:
-        return f"event-assignment-{task.canvas_assignment_id}"
-    return None
+def _feed_uid(task: TaskModel) -> str:
+    """The feed UID of the assignment a task follows."""
+    return f"event-assignment-{task.canvas_assignment_id}"
 
 
 def _sync_feed(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool) -> dict:
     """sync() against the calendar feed. See the module docstring."""
-    links = [(t.id, _feed_uid(t)) for t in _open_linked_tasks(db, user_id, feed=True)]
+    links = [(t.id, _feed_uid(t)) for t in _open_linked_tasks(db, user_id)]
     if not links:
         return {"fetched_at": now, "results": []}
     # The feed is read before any task changes: read() commits the session.
@@ -188,7 +174,7 @@ def _sync_feed(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh
     items = {item.uid: item for item in canvas_data_crud.feed_items(result.data, zone)}
 
     results = []
-    tasks = {t.id: t for t in _open_linked_tasks(db, user_id, [task_id for task_id, _ in links], feed=True)}
+    tasks = {t.id: t for t in _open_linked_tasks(db, user_id, [task_id for task_id, _ in links])}
     for task_id, uid in links:
         task = tasks.get(task_id)
         item = items.get(uid)
