@@ -3,10 +3,13 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
-from app.schemas.limits import CANVAS_HIDDEN_COURSES_MAX, CANVAS_URL_MAX
+from app.schemas.limits import CANVAS_HIDDEN_COURSES_MAX, CANVAS_URL_MAX, TAGS_PER_ITEM_MAX
+from app.schemas.tag_schema import Tag
 
 CanvasStatus = Literal["active", "invalid", "error"]
 CanvasConnectionType = Literal["token", "feed"]
+# GET /canvas/overview's window: the next 7 days, or everything upcoming (about 13 months).
+CanvasRange = Literal["week", "all"]
 
 
 class CanvasConnect(BaseModel):
@@ -39,6 +42,8 @@ class CanvasCapabilities(BaseModel):
 
     # GET /canvas/overview's upcoming list.
     upcoming: bool = False
+    # GET /canvas/classes: the user's classes with what's due in each.
+    classes: bool = False
     # Its missing and recently_graded lists.
     missing: bool = False
     recently_graded: bool = False
@@ -212,6 +217,7 @@ class CanvasReadOut(BaseModel):
 
 
 class CanvasOverviewOut(CanvasReadOut):
+    range: CanvasRange = "week"
     start: datetime
     end: datetime
     # Due in [start, end), soonest first. Feed items only for a calendar feed;
@@ -225,6 +231,45 @@ class CanvasOverviewOut(CanvasReadOut):
 
 class CanvasCoursesOut(CanvasReadOut):
     courses: list[CanvasCourse]
+
+
+class CanvasClass(BaseModel):
+    """One of the user's classes, with what's due in it. A feed's come from its items; a token's from its courses."""
+
+    id: int
+    # The course code: from the brackets in a feed item's title (e.g. "CS 460-01"), or Canvas's course_code.
+    code: str
+    # The full name and term; null for a feed, which doesn't carry them.
+    name: str | None = None
+    term: str | None = None
+    html_url: str | None = None
+    # Unticked under "Courses to show"; only listed with include_hidden=true.
+    hidden: bool = False
+    # Items due from the start of today through 7 days later, and through the end of the "all" range.
+    due_this_week: int = 0
+    upcoming: int = 0
+    # The soonest item due from now on, if any.
+    next_due: CanvasItem | CanvasFeedItem | None = None
+
+
+class CanvasClassesOut(CanvasReadOut):
+    classes: list[CanvasClass]
+
+
+class CanvasCourseTagsUpdate(BaseModel):
+    # The user's tag ids, in order; an empty list clears the class's default tags.
+    tag_ids: list[Annotated[int, Field(ge=1)]] = Field(max_length=TAGS_PER_ITEM_MAX)
+
+
+class CanvasCourseTags(BaseModel):
+    """A class's default tags for tasks added from it. Deleted tags are left out."""
+
+    course_id: int
+    tags: list[Tag]
+
+
+class CanvasCourseTagsOut(BaseModel):
+    courses: list[CanvasCourseTags]
 
 
 class CanvasModulesOut(CanvasReadOut):

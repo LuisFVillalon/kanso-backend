@@ -383,6 +383,80 @@ def test_an_unknown_time_zone_is_refused(connected, canvas):
     assert canvas.requests == []
 
 
+def _planner_requests(canvas) -> list[httpx.Request]:
+    return [r for r in canvas.requests if r.url.path == "/api/v1/planner/items"]
+
+
+def test_the_all_range_lists_everything_upcoming_through_a_bounded_window(connected, canvas):
+    week = connected.get("/canvas/overview", params={"tz": "America/Los_Angeles"}).json()
+    assert week["range"] == "week"
+    assert [i["id"] for i in week["upcoming"]] == [101, 103, 102]
+
+    body = connected.get("/canvas/overview", params={"tz": "America/Los_Angeles", "range": "all"}).json()
+    assert body["range"] == "all"
+    assert [i["id"] for i in body["upcoming"]] == [101, 103, 102, 104]
+    assert [i["id"] for i in body["missing"]] == [201, 202]
+    start, end = datetime.fromisoformat(body["start"]), datetime.fromisoformat(body["end"])
+    assert start == datetime.fromisoformat(week["start"])
+    # Local midnight 400 days later, whatever the clocks did in between.
+    assert (end.date() - start.date(), end.hour) == (timedelta(days=400), 0)
+    # Each range is its own planner request, and its own cache entry.
+    planners = _planner_requests(canvas)
+    assert len(planners) == 2
+    assert datetime.fromisoformat(planners[1].url.params["start_date"]) == start - timedelta(days=7)
+    assert datetime.fromisoformat(planners[1].url.params["end_date"]) == end
+    connected.get("/canvas/overview", params={"tz": "America/Los_Angeles", "range": "all"})
+    connected.get("/canvas/overview", params={"tz": "America/Los_Angeles"})
+    assert len(_planner_requests(canvas)) == 2
+
+
+def test_an_unknown_range_is_refused(connected, canvas):
+    assert connected.get("/canvas/overview", params={"range": "month"}).status_code == 422
+    assert canvas.requests == []
+
+
+# ── Classes ──────────────────────────────────────────────────────────────────
+
+def _classes(client, **params) -> list[dict]:
+    response = client.get("/canvas/classes", params={"tz": "America/Los_Angeles", **params})
+    assert response.status_code == 200, response.text
+    return response.json()["classes"]
+
+
+def test_a_tokens_classes_are_its_courses_with_whats_due(connected, canvas):
+    classes = _classes(connected)
+    assert [c["code"] for c in classes] == ["COMM 103", "CS 460", "PSY 101"]
+    comm, cs, psy = classes
+    assert {k: v for k, v in cs.items() if k != "next_due"} == {
+        "id": 11, "code": "CS 460", "name": "CS 460: Algorithms", "term": "Fall 2026",
+        "html_url": f"{BASE_URL}/courses/11", "hidden": False, "due_this_week": 1, "upcoming": 2,
+    }
+    assert cs["next_due"]["id"] == 101 and cs["next_due"]["title"] == "Problem Set 6"
+    assert (comm["due_this_week"], comm["upcoming"], comm["next_due"]["id"]) == (1, 1, 102)
+    assert (psy["due_this_week"], psy["upcoming"], psy["next_due"]["kind"]) == (1, 1, "quiz")
+    # A course with nothing due is still a class.
+    canvas.lists["/api/v1/planner/items"] = [[]]
+    canvas_cache.clear()
+    assert [(c["code"], c["upcoming"], c["next_due"]) for c in _classes(connected)] == [
+        ("COMM 103", 0, None), ("CS 460", 0, None), ("PSY 101", 0, None),
+    ]
+
+
+def test_classes_share_the_all_ranges_cached_overview(connected, canvas):
+    _classes(connected)
+    connected.get("/canvas/overview", params={"tz": "America/Los_Angeles", "range": "all"})
+    _classes(connected)
+    assert canvas.paths().count("/api/v1/planner/items") == 1
+    assert canvas.paths().count("/api/v1/courses") == 1
+
+
+def test_hidden_classes_are_left_out_unless_asked_for(connected, canvas):
+    connected.patch("/canvas/connection", json={"hidden_course_ids": [12]})
+    assert [c["id"] for c in _classes(connected)] == [11, 14]
+    everything = _classes(connected, include_hidden="true")
+    assert [(c["id"], c["hidden"]) for c in everything] == [(12, True), (11, False), (14, False)]
+
+
 # ── Courses, modules, assignments, announcements ─────────────────────────────
 
 def test_courses_come_with_grades_and_respect_hidden_grades(connected, canvas):
@@ -716,7 +790,7 @@ def test_the_token_never_appears_in_read_responses(connected, canvas):
 
 # ── Demo sandboxes ───────────────────────────────────────────────────────────
 
-DEMO_PATHS = ["/canvas/overview", "/canvas/courses", "/canvas/courses/1001/modules",
+DEMO_PATHS = ["/canvas/overview", "/canvas/classes", "/canvas/courses", "/canvas/courses/1001/modules",
               "/canvas/courses/1001/assignments", "/canvas/announcements"]
 
 
@@ -743,6 +817,14 @@ def test_demo_sample_data_fills_the_panel(demo_client, canvas):
     assert all(i["submission"]["graded"] for i in overview["recently_graded"])
     start, end = datetime.fromisoformat(overview["start"]), datetime.fromisoformat(overview["end"])
     assert all(start <= datetime.fromisoformat(i["due_at"]) < end for i in overview["upcoming"])
+
+    everything = demo_client.get("/canvas/overview", params={"range": "all"}).json()
+    assert everything["range"] == "all" and len(everything["upcoming"]) == len(overview["upcoming"])
+
+    classes = demo_client.get("/canvas/classes").json()["classes"]
+    assert [c["code"] for c in classes] == ["ART 157", "COMM 103", "CS 460", "MATH 254", "PSY 101"]
+    cs = next(c for c in classes if c["code"] == "CS 460")
+    assert (cs["upcoming"], cs["next_due"]["id"]) == (2, 5101)
 
     courses = demo_client.get("/canvas/courses").json()["courses"]
     assert len(courses) == 5

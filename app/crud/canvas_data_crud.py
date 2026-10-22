@@ -62,6 +62,7 @@ from app.models.canvas_connection_model import CanvasConnection
 from app.schemas.canvas_schema import (
     CanvasAnnouncement,
     CanvasAssignment,
+    CanvasClass,
     CanvasCourse,
     CanvasFeedItem,
     CanvasItem,
@@ -87,7 +88,10 @@ MIN_REFRESH_AGE = timedelta(seconds=30)
 MAX_IN_FLIGHT = 2
 # How long a fetch waits for one of the user's MAX_IN_FLIGHT slots before serving the cache.
 IN_FLIGHT_WAIT = timedelta(seconds=25)
-UPCOMING_DAYS = 7
+# The overview's ranges in days from the start of today: the next week, or
+# everything upcoming, about 13 months (a feed reaches a year ahead). The
+# token's planner request covers the same window, so "all" stays bounded.
+RANGE_DAYS = {"week": 7, "all": 400}
 RECENTLY_GRADED_DAYS = 7
 RECENTLY_GRADED_MAX = 10
 ANNOUNCEMENT_DAYS = 14
@@ -224,10 +228,10 @@ def _record(db: Session, user_id: str, nonce: bytes, values: dict) -> bool:
 
 # ── Fetchers: one per route, each returning normalized shapes ────────────────
 
-def upcoming_window(today: date, tz: ZoneInfo) -> tuple[datetime, datetime]:
-    """The user's local day today through UPCOMING_DAYS days later, as aware datetimes."""
+def upcoming_window(today: date, tz: ZoneInfo, range_: str = "week") -> tuple[datetime, datetime]:
+    """The user's local day today through RANGE_DAYS[range_] days later, as aware datetimes."""
     start = datetime.combine(today, time(), tzinfo=tz)
-    return start, datetime.combine(today + timedelta(days=UPCOMING_DAYS), time(), tzinfo=tz)
+    return start, datetime.combine(today + timedelta(days=RANGE_DAYS[range_]), time(), tzinfo=tz)
 
 
 def fetch_overview(start: datetime, end: datetime) -> Callable[[CanvasClient], dict]:
@@ -294,6 +298,55 @@ def feed_upcoming(entries: list[FeedEntry], tz: ZoneInfo, start: datetime, end: 
     upcoming = [item for item in feed_items(entries, tz) if start <= item.due_at < end]
     upcoming.sort(key=lambda item: (item.due_at, item.id))
     return upcoming
+
+
+def classes(
+    courses: list[CanvasClass], items: list[CanvasItem], today: date, tz: ZoneInfo, now: datetime
+) -> list[CanvasClass]:
+    """courses with what's due in each from items (the "all" range's upcoming), ordered by code.
+
+    due_this_week counts items due before the "week" range's end, upcoming
+    every item, and next_due is the soonest one due from now on.
+    """
+    week_end = upcoming_window(today, tz)[1]
+    by_course: defaultdict[int, list[CanvasItem]] = defaultdict(list)
+    for item in items:
+        if item.course_id is not None:
+            by_course[item.course_id].append(item)
+    out = []
+    for course in courses:
+        due = by_course[course.id]
+        out.append(course.model_copy(update={
+            "due_this_week": sum(1 for item in due if item.due_at is not None and item.due_at < week_end),
+            "upcoming": len(due),
+            "next_due": next((item for item in due if item.due_at is not None and item.due_at >= now), None),
+        }))
+    out.sort(key=lambda course: (course.code.casefold(), course.id))
+    return out
+
+
+def feed_classes(entries: list[FeedEntry], base_url: str) -> list[CanvasClass]:
+    """The classes a feed's items belong to, past ones included, each named by the code in its items' titles."""
+    codes: dict[int, str | None] = {}
+    for entry in entries:
+        item = entry.item
+        if item.course_id is not None and codes.get(item.course_id) is None:
+            codes[item.course_id] = item.course_name
+    return [
+        CanvasClass(id=course_id, code=code or f"Course {course_id}", html_url=f"{base_url}/courses/{course_id}")
+        for course_id, code in codes.items()
+    ]
+
+
+def course_classes(courses: list[CanvasCourse]) -> list[CanvasClass]:
+    """A token's courses as classes, with the code (or the name) as the class's code."""
+    return [
+        CanvasClass(
+            id=course.id, code=course.course_code or course.name, name=course.name, term=course.term,
+            html_url=course.html_url,
+        )
+        for course in courses
+    ]
 
 
 def recently_graded(items: list[CanvasItem], start: datetime) -> list[CanvasItem]:

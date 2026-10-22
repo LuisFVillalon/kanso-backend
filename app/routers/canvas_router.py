@@ -8,16 +8,20 @@ POST   /canvas/connection/test  — re-checks the stored token with Canvas, or f
 PATCH  /canvas/connection       — changes settings (the courses to hide)
 DELETE /canvas/connection       — hard-deletes the connection and its token
 
-GET    /canvas/overview                        — due in the next 7 days, missing work and recently graded work
+GET    /canvas/overview                        — due this week (or all upcoming), missing and recently graded work
+GET    /canvas/classes                         — the user's classes, with what's due in each
 GET    /canvas/courses                         — active courses with current grades
 GET    /canvas/courses/{course_id}/modules     — a course's modules and their items
 GET    /canvas/courses/{course_id}/assignments — a course's assignments and quizzes, with the user's submissions
 GET    /canvas/announcements                   — the last 14 days of announcements
 POST   /canvas/linked-tasks/sync               — tasks added from Canvas: submitted yet, and due date changes
 
+GET    /canvas/course-tags                     — each class's default tags for tasks added from it
+PUT    /canvas/course-tags/{course_id}         — sets (or clears) a class's default tags
+
 A calendar feed connection (core/canvas_feed.py) has dates only: the
-overview's upcoming list (missing and recently_graded stay empty) and the
-linked-task sync's due dates. Courses, modules, assignments and
+overview's upcoming list (missing and recently_graded stay empty), the
+classes its items belong to, and the linked-task sync's due dates. Courses, modules, assignments and
 announcements answer 404 canvas_not_supported for it; GET /canvas/connection
 says which type is connected and what it can show.
 
@@ -66,8 +70,10 @@ from app.crud.canvas_crud import (
     connect,
     connect_feed,
     connection_out,
+    course_tags,
     delete_connection,
     get_connection,
+    set_course_tags,
     update_connection,
 )
 from app.crud.canvas_data_crud import CanvasCourseHidden, CanvasNotConnected, CanvasNotSupported
@@ -75,14 +81,18 @@ from app.database.database import get_db
 from app.schemas.canvas_schema import (
     CanvasAnnouncementsOut,
     CanvasAssignmentsOut,
+    CanvasClassesOut,
     CanvasConnect,
     CanvasConnectionOut,
     CanvasConnectionUpdate,
     CanvasCoursesOut,
+    CanvasCourseTagsOut,
+    CanvasCourseTagsUpdate,
     CanvasFeedConnect,
     CanvasLinkedSyncOut,
     CanvasModulesOut,
     CanvasOverviewOut,
+    CanvasRange,
 )
 
 log = logging.getLogger(__name__)
@@ -234,6 +244,7 @@ def remove_canvas_connection(
 _TZ = Query("UTC", description="The caller's IANA time zone, which decides what 'today' is.")
 _REFRESH = Query(False, description="Fetch from Canvas even if the cached data is fresh (at most every 30 seconds).")
 _COURSE_ID = Path(ge=1)
+_INCLUDE_HIDDEN = Query(False, description="Also list courses unticked under Courses to show, for Settings.")
 
 
 def _read_http_error(exc: CanvasError | crypto.EncryptionKeyError) -> HTTPException:
@@ -276,39 +287,93 @@ def _no_sample_course() -> HTTPException:
 @router.get("/overview", response_model=CanvasOverviewOut)
 def read_canvas_overview(
     tz: str = _TZ,
+    range_: CanvasRange = Query(
+        "week", alias="range", description="week: the next 7 days. all: everything upcoming, about 13 months.",
+    ),
     refresh: bool = _REFRESH,
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Work due from the start of today through the next 7 days, soonest first, missing and recently graded work.
+    """Work due from the start of today through the range's end, soonest first, missing and recently graded work.
 
     A calendar feed gives the upcoming work only.
     """
     zone = require_time_zone(tz)
     today = datetime.now(zone).date()
-    start, end = canvas_data_crud.upcoming_window(today, zone)
+    start, end = canvas_data_crud.upcoming_window(today, zone, range_)
+    window = {"range": range_, "start": start, "end": end}
     if current_user.is_anonymous:
-        return CanvasOverviewOut(**_sample(), start=start, end=end, **canvas_sample.overview(today, zone, start, end))
+        return CanvasOverviewOut(**_sample(), **window, **canvas_sample.overview(today, zone, start, end))
     connection = get_connection(db, current_user.id)
     if connection is not None and connection.connection_type == "feed":
         result = _read(db, current_user, "feed", (), canvas_data_crud.fetch_feed, refresh=refresh)
         upcoming = canvas_data_crud.feed_upcoming(result.data, canvas_data_crud.feed_zone(connection), start, end)
         return CanvasOverviewOut(
-            **_freshness(result), start=start, end=end, missing=[], recently_graded=[],
+            **_freshness(result), **window, missing=[], recently_graded=[],
             upcoming=[item for item in upcoming if item.course_id not in result.hidden_course_ids],
         )
     result = _read(
-        db, current_user, "overview", (zone.key, today.isoformat()),
+        db, current_user, "overview", (zone.key, today.isoformat(), range_),
         canvas_data_crud.fetch_overview(start, end), refresh=refresh,
     )
     shown = {key: [item for item in items if item.course_id not in result.hidden_course_ids]
              for key, items in result.data.items()}
-    return CanvasOverviewOut(**_freshness(result), start=start, end=end, **shown)
+    return CanvasOverviewOut(**_freshness(result), **window, **shown)
+
+
+@router.get("/classes", response_model=CanvasClassesOut)
+def read_canvas_classes(
+    tz: str = _TZ,
+    include_hidden: bool = _INCLUDE_HIDDEN,
+    refresh: bool = _REFRESH,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The user's classes by code, each with how much is due this week and in all, and the next item due.
+
+    A calendar feed's classes are the courses its items belong to, from the
+    cached feed, with no name or term; a token's are its active courses, with
+    counts from the overview's "all" range.
+    """
+    zone = require_time_zone(tz)
+    now = datetime.now(UTC)
+    today = now.astimezone(zone).date()
+    start, end = canvas_data_crud.upcoming_window(today, zone, "all")
+    if current_user.is_anonymous:
+        found = canvas_data_crud.course_classes(canvas_sample.courses())
+        items = canvas_sample.overview(today, zone, start, end)["upcoming"]
+        return CanvasClassesOut(**_sample(), classes=canvas_data_crud.classes(found, items, today, zone, now))
+    connection = get_connection(db, current_user.id)
+    if connection is not None and connection.connection_type == "feed":
+        result = _read(db, current_user, "feed", (), canvas_data_crud.fetch_feed, refresh=refresh)
+        found = canvas_data_crud.feed_classes(result.data, connection.base_url)
+        items = canvas_data_crud.feed_upcoming(result.data, canvas_data_crud.feed_zone(connection), start, end)
+        freshness = _freshness(result)
+    else:
+        courses = _read(db, current_user, "courses", (), canvas_data_crud.fetch_courses, refresh=refresh)
+        result = _read(
+            db, current_user, "overview", (zone.key, today.isoformat(), "all"),
+            canvas_data_crud.fetch_overview(start, end), refresh=refresh,
+        )
+        found = canvas_data_crud.course_classes(courses.data)
+        items = result.data["upcoming"]
+        freshness = {
+            "fetched_at": min(courses.fetched_at, result.fetched_at),
+            "busy": courses.busy or result.busy,
+            "stale": courses.stale or result.stale,
+        }
+    classes = [
+        found_class.model_copy(update={"hidden": found_class.id in result.hidden_course_ids})
+        for found_class in canvas_data_crud.classes(found, items, today, zone, now)
+    ]
+    if not include_hidden:
+        classes = [found_class for found_class in classes if not found_class.hidden]
+    return CanvasClassesOut(**freshness, classes=classes)
 
 
 @router.get("/courses", response_model=CanvasCoursesOut)
 def read_canvas_courses(
-    include_hidden: bool = Query(False, description="Also list courses unticked under Courses to show, for Settings."),
+    include_hidden: bool = _INCLUDE_HIDDEN,
     refresh: bool = _REFRESH,
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -416,3 +481,27 @@ def sync_canvas_linked_tasks(
     except (CanvasError, crypto.EncryptionKeyError) as exc:
         raise _read_http_error(exc) from None
     return CanvasLinkedSyncOut(**result)
+
+
+# ── Default tags per class ───────────────────────────────────────────────────
+
+@router.get("/course-tags", response_model=CanvasCourseTagsOut)
+def read_canvas_course_tags(
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Each class's default tags for tasks added from it, by course id. Empty when Canvas isn't connected."""
+    return CanvasCourseTagsOut(courses=course_tags(db, current_user.id))
+
+
+@router.put("/course-tags/{course_id}", response_model=CanvasCourseTagsOut)
+def update_canvas_course_tags(
+    body: CanvasCourseTagsUpdate,
+    course_id: int = _COURSE_ID,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Set the class's default tags to the user's tags tag_ids, in order ([] clears them), and return every class's."""
+    if set_course_tags(db, current_user.id, course_id, body.tag_ids) is None:
+        raise _not_connected()
+    return CanvasCourseTagsOut(courses=course_tags(db, current_user.id))

@@ -11,11 +11,15 @@ the per-course settings are reset, since course ids belong to the old
 account. Any 401 from Canvas, or a token past its expiry date, marks the
 connection invalid so the frontend can ask the user to reconnect. Removing
 the connection deletes the row outright, with no trash retention.
+
+Each class can have default tags for the tasks added from it, stored on the
+connection by Canvas course id and reset with the other per-course settings.
 """
 
 import re
 from datetime import UTC, datetime
 
+from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,19 +31,20 @@ from app.core.canvas_client import (
     normalize_base_url,
 )
 from app.models.canvas_connection_model import CanvasConnection
-from app.schemas.canvas_schema import CanvasCapabilities, CanvasConnectionOut
-from app.schemas.limits import CANVAS_TOKEN_MAX, CANVAS_URL_MAX
+from app.models.tag_model import Tag as TagModel
+from app.schemas.canvas_schema import CanvasCapabilities, CanvasConnectionOut, CanvasCourseTags
+from app.schemas.limits import CANVAS_COURSE_TAGS_MAX, CANVAS_TOKEN_MAX, CANVAS_URL_MAX
 
 # Canvas tokens are printable ASCII with no spaces, e.g. "7~" + 64 characters.
 _TOKEN = re.compile(rf"[\x21-\x7e]{{16,{CANVAS_TOKEN_MAX}}}")
 
 CAPABILITIES = {
     "token": CanvasCapabilities(
-        upcoming=True, missing=True, recently_graded=True, courses=True, modules=True, assignments=True,
-        announcements=True, link_tasks=True, submission_status=True,
+        upcoming=True, classes=True, missing=True, recently_graded=True, courses=True, modules=True,
+        assignments=True, announcements=True, link_tasks=True, submission_status=True,
     ),
-    # A feed has the user's items and their dates, and nothing else.
-    "feed": CanvasCapabilities(upcoming=True, link_tasks=True),
+    # A feed has the user's items and their dates, and nothing else; its classes come from those items.
+    "feed": CanvasCapabilities(upcoming=True, classes=True, link_tasks=True),
 }
 
 
@@ -135,10 +140,11 @@ def _store(
         raise CanvasAccountChanged("The token belongs to a different Canvas account.")
 
     if row is None:
-        row = CanvasConnection(user_id=user_id, hidden_course_ids=[])
+        row = CanvasConnection(user_id=user_id, hidden_course_ids=[], course_tag_ids={})
         db.add(row)
     elif account_changed:
         row.hidden_course_ids = []
+        row.course_tag_ids = {}
     row.connection_type = "token"
     row.base_url = base_url
     row.token_ciphertext = encrypted.ciphertext
@@ -198,10 +204,11 @@ def _store_feed(
         raise CanvasAccountChanged("The feed belongs to a different Canvas school.")
 
     if row is None:
-        row = CanvasConnection(user_id=user_id, hidden_course_ids=[])
+        row = CanvasConnection(user_id=user_id, hidden_course_ids=[], course_tag_ids={})
         db.add(row)
     elif account_changed:
         row.hidden_course_ids = []
+        row.course_tag_ids = {}
     row.connection_type = "feed"
     row.base_url = feed.base_url
     row.token_ciphertext = encrypted.ciphertext
@@ -266,6 +273,53 @@ def update_connection(db: Session, user_id: str, hidden_course_ids: list[int]) -
     if row is None:
         return None
     row.hidden_course_ids = sorted(set(hidden_course_ids))
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def course_tags(db: Session, user_id: str) -> list[CanvasCourseTags]:
+    """Each class's default tags, by course id, leaving out deleted tags and classes left with none."""
+    row = get_connection(db, user_id)
+    saved = (row.course_tag_ids or {}) if row is not None else {}
+    wanted = {tag_id for tag_ids in saved.values() for tag_id in tag_ids}
+    if not wanted:
+        return []
+    tags = {
+        tag.id: tag for tag in db.query(TagModel).filter(
+            TagModel.id.in_(wanted), TagModel.user_id == user_id, TagModel.deleted_at.is_(None)
+        )
+    }
+    out = []
+    for course_id in sorted(saved, key=int):
+        shown = [tags[tag_id] for tag_id in saved[course_id] if tag_id in tags]
+        if shown:
+            out.append(CanvasCourseTags(course_id=int(course_id), tags=shown))
+    return out
+
+
+def set_course_tags(db: Session, user_id: str, course_id: int, tag_ids: list[int]) -> CanvasConnection | None:
+    """Set a class's default tags to the user's tags tag_ids, in order; [] clears them. None if not connected.
+
+    Any id that isn't one of the user's tags, or one in the trash, is a 422
+    canvas_tags_invalid, as is a new class past CANVAS_COURSE_TAGS_MAX.
+    """
+    row = get_connection(db, user_id)
+    if row is None:
+        return None
+    tag_ids = list(dict.fromkeys(tag_ids))
+    found = db.query(TagModel.id).filter(
+        TagModel.id.in_(tag_ids), TagModel.user_id == user_id, TagModel.deleted_at.is_(None)
+    ).count() if tag_ids else 0
+    saved = dict(row.course_tag_ids or {})
+    key = str(course_id)
+    if found != len(tag_ids) or (tag_ids and key not in saved and len(saved) >= CANVAS_COURSE_TAGS_MAX):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="canvas_tags_invalid")
+    if tag_ids:
+        saved[key] = tag_ids
+    else:
+        saved.pop(key, None)
+    row.course_tag_ids = saved
     db.commit()
     db.refresh(row)
     return row
