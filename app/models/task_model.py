@@ -45,6 +45,8 @@ class Task(Base):
             "canvas_assignment_id",
             postgresql_where=text("canvas_assignment_id IS NOT NULL"),
         ),
+        # The same, for tasks added from a Canvas calendar feed item.
+        Index("ix_tasks_user_id_canvas_uid", "user_id", "canvas_uid", postgresql_where=text("canvas_uid IS NOT NULL")),
     )
 
     id = Column(Integer, primary_key=True)
@@ -70,6 +72,9 @@ class Task(Base):
     # for every other task. Canvas ids can exceed 32 bits.
     canvas_assignment_id = Column(BigInteger, nullable=True)
     canvas_html_url = Column(Text, nullable=True)
+    # The calendar feed item a task added from a feed follows, by its UID
+    # (e.g. "event-assignment-123"); NULL otherwise.
+    canvas_uid = Column(Text, nullable=True)
     # The assignment's due_at as of the last sync, so a sync moves the task's
     # due date only when Canvas's changed, not when the user edited it.
     canvas_due_at = Column(DateTime(timezone=True), nullable=True)

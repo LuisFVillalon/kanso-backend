@@ -29,6 +29,8 @@ LINKED_TASKS_MAX = 100
 # unticked under "Courses to show".
 CANVAS_URL_MAX = 2048
 CANVAS_TOKEN_MAX = 512
+# A calendar feed item's UID, e.g. "event-assignment-123".
+CANVAS_UID_MAX = 255
 CANVAS_HIDDEN_COURSES_MAX = 500
 # Canvas ids, stored as BIGINT.
 CANVAS_ID_MAX = 2**63 - 1

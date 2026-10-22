@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.crud.base import archived_filter, deleted_filter, get_owned
@@ -53,12 +53,23 @@ def _validate_priority_unique(db: Session, user_id: str, priority: int, exclude_
 
 
 def _open_canvas_task(
-    db: Session, user_id: str, canvas_assignment_id: int, exclude_task_id: int | None = None
+    db: Session,
+    user_id: str,
+    canvas_assignment_id: int | None,
+    canvas_uid: str | None = None,
+    exclude_task_id: int | None = None,
 ) -> TaskModel | None:
-    """The user's open (not completed, archived or deleted) task following this Canvas assignment, if any."""
+    """The user's open (not completed, archived or deleted) task following this Canvas assignment or feed item."""
+    follows = []
+    if canvas_assignment_id is not None:
+        follows.append(TaskModel.canvas_assignment_id == canvas_assignment_id)
+    if canvas_uid is not None:
+        follows.append(TaskModel.canvas_uid == canvas_uid)
+    if not follows:
+        return None
     q = db.query(TaskModel).filter(
         TaskModel.user_id == user_id,
-        TaskModel.canvas_assignment_id == canvas_assignment_id,
+        or_(*follows),
         TaskModel.completed.is_not(True),
         archived_filter(TaskModel, False),
         deleted_filter(TaskModel, False),
@@ -68,28 +79,37 @@ def _open_canvas_task(
     return q.order_by(TaskModel.id).first()
 
 
+def _follows_canvas(task) -> bool:
+    return task.canvas_assignment_id is not None or task.canvas_uid is not None
+
+
 def _drop_taken_canvas_link(db: Session, user_id: str, task: TaskModel) -> None:
-    """Unlink an open task from its Canvas assignment if another open task already follows it.
+    """Unlink an open task from its Canvas assignment or feed item if another open task already follows it.
 
     Like a taken priority, for tasks reopened, unarchived or restored while
     another task took over the assignment. The page link is kept.
     """
     if (
-        task.canvas_assignment_id is not None
+        _follows_canvas(task)
         and not task.completed
         and task.archived_at is None
         and task.deleted_at is None
-        and _open_canvas_task(db, user_id, task.canvas_assignment_id, exclude_task_id=task.id)
+        and _open_canvas_task(db, user_id, task.canvas_assignment_id, task.canvas_uid, exclude_task_id=task.id)
     ):
         task.canvas_assignment_id = None
+        task.canvas_uid = None
         task.canvas_due_at = None
 
 
 def _validate_canvas_unique(
-    db: Session, user_id: str, canvas_assignment_id: int, exclude_task_id: int | None = None
+    db: Session,
+    user_id: str,
+    canvas_assignment_id: int | None,
+    canvas_uid: str | None = None,
+    exclude_task_id: int | None = None,
 ) -> None:
-    """Raise 409, with the existing task's id, if an open task already follows this Canvas assignment."""
-    existing = _open_canvas_task(db, user_id, canvas_assignment_id, exclude_task_id)
+    """Raise 409, with the existing task's id, if an open task already follows this Canvas assignment or feed item."""
+    existing = _open_canvas_task(db, user_id, canvas_assignment_id, canvas_uid, exclude_task_id)
     if existing:
         raise HTTPException(
             status_code=409,
@@ -159,8 +179,8 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
     priority = task.priority
     if priority is not None:
         _validate_priority_unique(db, user_id, priority)
-    if task.canvas_assignment_id is not None and not task.completed:
-        _validate_canvas_unique(db, user_id, task.canvas_assignment_id)
+    if _follows_canvas(task) and not task.completed:
+        _validate_canvas_unique(db, user_id, task.canvas_assignment_id, task.canvas_uid)
     position = None
     if task.parent_task_id is not None:
         parent = _get_parent(db, task.parent_task_id, user_id)
@@ -183,7 +203,8 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
         reminder_minutes=task.reminder_minutes,
         canvas_assignment_id=task.canvas_assignment_id,
         canvas_html_url=task.canvas_html_url,
-        canvas_due_at=task.canvas_due_at if task.canvas_assignment_id is not None else None,
+        canvas_uid=task.canvas_uid,
+        canvas_due_at=task.canvas_due_at if _follows_canvas(task) else None,
         user_id=user_id,
     )
     set_item_tags(db, db_task, task.tags, user_id)
@@ -266,7 +287,7 @@ _TASK_UPDATE_FIELDS = (
 )
 # Replaced only when the payload includes them, so a client that predates the
 # Canvas link doesn't unlink a task by saving it.
-_CANVAS_FIELDS = ("canvas_assignment_id", "canvas_html_url")
+_CANVAS_FIELDS = ("canvas_assignment_id", "canvas_html_url", "canvas_uid")
 
 
 def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
@@ -282,13 +303,15 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     assignment_id = (
         task.canvas_assignment_id if "canvas_assignment_id" in canvas_fields else db_task.canvas_assignment_id
     )
-    relinked = assignment_id != db_task.canvas_assignment_id
+    uid = task.canvas_uid if "canvas_uid" in canvas_fields else db_task.canvas_uid
+    linked = assignment_id is not None or uid is not None
+    relinked = assignment_id != db_task.canvas_assignment_id or uid != db_task.canvas_uid
     # Only a newly set or reopened link is checked, so a task already
     # following an assignment re-saves as it is.
-    if assignment_id is not None and not task.completed and (relinked or db_task.completed):
-        _validate_canvas_unique(db, user_id, assignment_id, exclude_task_id=task_id)
+    if linked and not task.completed and (relinked or db_task.completed):
+        _validate_canvas_unique(db, user_id, assignment_id, uid, exclude_task_id=task_id)
     if relinked:
-        db_task.canvas_due_at = task.canvas_due_at if assignment_id is not None else None
+        db_task.canvas_due_at = task.canvas_due_at if linked else None
 
     # Only a changed link is checked, so re-saving a task under its current
     # parent never trips the loop or archive checks.

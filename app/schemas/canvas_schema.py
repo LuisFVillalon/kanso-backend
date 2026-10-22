@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, SecretStr
 from app.schemas.limits import CANVAS_HIDDEN_COURSES_MAX, CANVAS_URL_MAX
 
 CanvasStatus = Literal["active", "invalid", "error"]
+CanvasConnectionType = Literal["token", "feed"]
 
 
 class CanvasConnect(BaseModel):
@@ -19,18 +20,53 @@ class CanvasConnect(BaseModel):
     allow_account_change: bool = False
 
 
+class CanvasFeedConnect(BaseModel):
+    # The user's calendar feed link (Canvas → Calendar → Calendar Feed). A
+    # SecretStr like the token: anyone holding it can read the calendar. Its
+    # length and format are checked in crud.
+    feed_url: SecretStr
+    # Replacing a connection to another school is refused with
+    # canvas_account_changed unless this is true.
+    allow_account_change: bool = False
+
+
 class CanvasConnectionUpdate(BaseModel):
     hidden_course_ids: list[Annotated[int, Field(ge=1)]] = Field(max_length=CANVAS_HIDDEN_COURSES_MAX)
 
 
+class CanvasCapabilities(BaseModel):
+    """What the connection can show. A calendar feed has dates only: upcoming items, and tasks added from them."""
+
+    # GET /canvas/overview's upcoming list.
+    upcoming: bool = False
+    # Its missing and recently_graded lists.
+    missing: bool = False
+    recently_graded: bool = False
+    # GET /canvas/courses (grades), and a course's modules and assignments.
+    courses: bool = False
+    modules: bool = False
+    assignments: bool = False
+    announcements: bool = False
+    # Add to tasks, and the linked-task sync of due dates.
+    link_tasks: bool = False
+    # The linked-task sync reports whether an assignment was submitted.
+    submission_status: bool = False
+
+
 class CanvasConnectionOut(BaseModel):
-    """The connection's masked status. Never carries the token itself."""
+    """The connection's masked status. Never carries the token or the feed URL itself."""
 
     connected: bool
+    # "token" (access token) or "feed" (calendar feed link).
+    connection_type: CanvasConnectionType | None = None
+    capabilities: CanvasCapabilities = CanvasCapabilities()
     # "invalid" means Canvas rejected the token or it has expired: reconnect.
     status: CanvasStatus | None = None
     base_url: str | None = None
     token_last4: str | None = None
+    # A feed's link with all but its code's last 4 characters left out.
+    feed_url_masked: str | None = None
+    # The Canvas account; null for a feed.
     canvas_user_id: int | None = None
     canvas_user_name: str | None = None
     token_expires_at: datetime | None = None
@@ -74,6 +110,16 @@ class CanvasItem(BaseModel):
     points_possible: float | None = None
     html_url: str | None = None
     submission: CanvasSubmission | None = None
+
+
+class CanvasFeedItem(CanvasItem):
+    """An item from a calendar feed: no points or submission, but a UID."""
+
+    # The feed item's UID (e.g. "event-assignment-123"), which a task added from it follows.
+    uid: str
+    # Due on a day with no time: due_at is 11:59 pm (for an assignment) or
+    # midnight that day in the caller's time zone.
+    all_day: bool = False
 
 
 class CanvasAssignment(CanvasItem):
@@ -160,8 +206,9 @@ class CanvasReadOut(BaseModel):
 class CanvasOverviewOut(CanvasReadOut):
     start: datetime
     end: datetime
-    # Due in [start, end), soonest first.
-    upcoming: list[CanvasItem]
+    # Due in [start, end), soonest first. Feed items only for a calendar feed;
+    # a token's items have no uid, so they never validate as one.
+    upcoming: list[CanvasItem | CanvasFeedItem]
     # Past due and not submitted, from Canvas's missing submissions.
     missing: list[CanvasItem]
     # Graded, due in the 7 days before start, newest first, at most 10.
@@ -193,6 +240,7 @@ class CanvasLinkedTaskSync(BaseModel):
     # False when the assignment couldn't be read, so the task was left alone.
     synced: bool
     # Canvas shows the assignment submitted: offer to complete the task.
+    # Always false for a calendar feed, which doesn't carry submissions.
     submitted: bool = False
     # The assignment's due date on Canvas; null if it has none (or not synced).
     due_at: datetime | None = None

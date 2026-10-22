@@ -6,6 +6,7 @@ from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_val
 
 from app.schemas.limits import (
     CANVAS_ID_MAX,
+    CANVAS_UID_MAX,
     CANVAS_URL_MAX,
     LINKED_TASKS_MAX,
     REMINDER_MINUTES_MAX,
@@ -38,6 +39,8 @@ class TaskBase(BaseModel):
     # follows (its assignment id, not a classic quiz's quiz_id) and its page.
     canvas_assignment_id: int | None = None
     canvas_html_url: str | None = None
+    # Set on tasks added from a calendar feed item: the item's UID.
+    canvas_uid: str | None = None
 
     tags: list[TagCreate] = []
 
@@ -79,9 +82,15 @@ class TaskCreate(TaskBase):
     tags: list[TagCreate] = Field([], max_length=TAGS_PER_ITEM_MAX)
     canvas_assignment_id: int | None = Field(None, ge=1, le=CANVAS_ID_MAX)
     canvas_html_url: str | None = Field(None, max_length=CANVAS_URL_MAX)
+    canvas_uid: str | None = Field(None, max_length=CANVAS_UID_MAX)
     # Canvas's due_at for the assignment when the task is linked, so the first
     # sync can tell a due date the user changed from one Canvas changed.
     canvas_due_at: AwareDatetime | None = None
+
+    @field_validator("canvas_uid")
+    @classmethod
+    def empty_uid_to_none(cls, v):
+        return v or None
 
     @field_validator("canvas_html_url")
     @classmethod

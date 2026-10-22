@@ -17,5 +17,8 @@ httpx==0.28.1
 
 python-dotenv==1.2.3
 
+# Parses Canvas calendar feeds (.ics)
+icalendar==7.3.0
+
 # IANA time zone data for zoneinfo; slim images may not ship /usr/share/zoneinfo
-tzdata==2025.2
+tzdata==2026.5
