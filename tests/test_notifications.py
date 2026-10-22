@@ -124,7 +124,7 @@ def test_moving_a_due_time_makes_a_new_occurrence(db):
 @pytest.mark.usefixtures("without_mood_alerts")
 def test_due_today_overdue_and_habit_alerts_are_no_longer_sent(db):
     _task(db, "Date only", DAY)
-    _task(db, "Late", DAY, time(9, 0))
+    _task(db, "Late", DAY, time(6, 0))
     db.add(Habit(title="Read", user_id=USER_ID))
     db.flush()
     for hour in (8, 12, 21, 23):
