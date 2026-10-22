@@ -41,9 +41,9 @@ Every table also carries `user_id`. The single-row-per-user tables are `profiles
 app/
   main.py        # App, CORS, router registration, /health
   core/          # auth.py (JWT verification), supabase_admin.py, rate_limit.py, http_utils.py,
-                 # crypto.py (token encryption), canvas_client.py (Canvas API calls),
+                 # password_policy.py, crypto.py (token encryption), canvas_client.py (Canvas API calls),
                  # canvas_feed.py (Canvas calendar feeds), canvas_cache.py (in-process cache of Canvas data)
-  routers/       # One per domain; thin handlers that depend on get_current_user + get_db
+  routers/       # Thin handlers, grouped by domain, that depend on get_current_user + get_db
   crud/          # Queries and business logic (streaks, debrief, demo seed, account deletion)
   models/        # SQLAlchemy models
   schemas/       # Pydantic request/response models; limits.py holds the input bounds
@@ -52,7 +52,7 @@ tests/           # pytest suite (needs a throwaway Postgres, see below)
 alembic/         # Migrations (date-prefixed); run automatically on every deploy
 ```
 
-Routes use verb-style paths (`/get-tasks`, `/create-task`, `/update-task/{id}`, `/del-task/{id}`), except the Canvas ones, which are one resource under `/canvas` with HTTP methods. Each domain has one file per layer: `routers/` → `crud/` → `models/` + `schemas/`.
+Routes use verb-style paths (`/get-tasks`, `/create-task`, `/update-task/{id}`, `/del-task/{id}`), except the Canvas ones, which are one resource under `/canvas` with HTTP methods. Each domain goes `routers/` → `crud/` → `models/` + `schemas/`; the larger ones are split by concern within a layer, e.g. tasks across `task_crud.py`, `task_lifecycle_crud.py` (archive and trash), `task_tree.py` (linked-task traversal) and `task_rules.py` (priority and Canvas-link uniqueness).
 
 ## Endpoints
 
