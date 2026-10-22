@@ -245,36 +245,8 @@ class CanvasClient:
             "Accept-Encoding": "identity",
             "Host": self._host,
         }
-        try:
-            return asyncio.run(self._get(url, headers))
-        except (TimeoutError, httpx.TimeoutException):
-            raise CanvasUnavailable("Canvas took too long to answer.") from None
-        except httpx.HTTPError:
-            raise CanvasUnavailable("Canvas couldn't be reached.") from None
-
-    async def _get(self, url: httpx.URL, headers: dict):
-        # DEADLINE covers the whole exchange: connect, TLS, headers and body.
-        async with asyncio.timeout(DEADLINE):
-            async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False, transport=transport) as client:
-                for i, address in enumerate(self._addresses):
-                    try:
-                        return await self._fetch(client, url.copy_with(host=address), headers)
-                    except (httpx.ConnectError, httpx.ConnectTimeout):
-                        if i == len(self._addresses) - 1:
-                            raise
-
-    async def _fetch(self, client: httpx.AsyncClient, url: httpx.URL, headers: dict):
-        # The URL names the checked address; sni_hostname keeps TLS (SNI and
-        # certificate verification) on the school's host name.
-        async with client.stream("GET", url, headers=headers, extensions={"sni_hostname": self._host}) as response:
-            if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-                raise CanvasNotCanvas("The host answered with an encoding that was not asked for.")
-            body = bytearray()
-            async for chunk in response.aiter_raw():
-                body += chunk
-                if len(body) > MAX_RESPONSE_BYTES:
-                    raise CanvasNotCanvas("The host's answer was too large.")
-            return _decode(response.status_code, response.headers, bytes(body)), response.headers
+        status_code, response_headers, body = get_pinned(self._host, self._addresses, url, headers)
+        return _decode(status_code, response_headers, body), response_headers
 
     def get_self(self) -> dict:
         """The token owner's Canvas account: {"id": int, "name": str}."""
@@ -307,6 +279,47 @@ class CanvasClient:
             return datetime.fromisoformat(matches[0]["expires_at"])
         except (KeyError, TypeError, ValueError):
             return None
+
+
+def get_pinned(host: str, addresses: list[str], url: httpx.URL, headers: dict) -> tuple[int, httpx.Headers, bytes]:
+    """GET url at the first of host's checked addresses that connects; returns (status, headers, body).
+
+    TLS (SNI and certificate verification) stays on host. Redirects aren't
+    followed, and an answer over MAX_RESPONSE_BYTES or slower than DEADLINE
+    is abandoned.
+    """
+    try:
+        return asyncio.run(_get(host, addresses, url, headers))
+    except (TimeoutError, httpx.TimeoutException):
+        raise CanvasUnavailable("Canvas took too long to answer.") from None
+    except httpx.HTTPError:
+        raise CanvasUnavailable("Canvas couldn't be reached.") from None
+
+
+async def _get(host: str, addresses: list[str], url: httpx.URL, headers: dict):
+    # DEADLINE covers the whole exchange: connect, TLS, headers and body.
+    async with asyncio.timeout(DEADLINE):
+        async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False, transport=transport) as client:
+            for i, address in enumerate(addresses):
+                try:
+                    return await _fetch(client, host, url.copy_with(host=address), headers)
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    if i == len(addresses) - 1:
+                        raise
+
+
+async def _fetch(client: httpx.AsyncClient, host: str, url: httpx.URL, headers: dict):
+    # The URL names the checked address; sni_hostname keeps TLS (SNI and
+    # certificate verification) on the school's host name.
+    async with client.stream("GET", url, headers=headers, extensions={"sni_hostname": host}) as response:
+        if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+            raise CanvasNotCanvas("The host answered with an encoding that was not asked for.")
+        body = bytearray()
+        async for chunk in response.aiter_raw():
+            body += chunk
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise CanvasNotCanvas("The host's answer was too large.")
+        return response.status_code, response.headers, bytes(body)
 
 
 def _is_rate_limited(status_code: int, body: bytes) -> bool:

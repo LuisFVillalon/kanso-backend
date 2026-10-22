@@ -4,13 +4,17 @@ with grades, a course's modules and assignments, and announcements.
 
 Every read goes through read(), which serves the in-process cache
 (core/canvas_cache.py) while it's fresh and otherwise calls Canvas with the
-user's decrypted token:
+user's decrypted token, or fetches their calendar feed:
+
+- A calendar feed connection has only the "feed" kind (its items and their
+  dates), and a token connection everything else; any other read raises
+  CanvasNotSupported without calling Canvas.
 
 - A connection already marked invalid, or past its token's expiry date,
   raises CanvasTokenInvalid without calling Canvas.
-- A 401 from Canvas (or a token that no longer decrypts) marks the
-  connection invalid, so the panel shows "Reconnect Canvas", and drops the
-  user's cached data.
+- A 401 from Canvas, a feed Canvas no longer knows, or a secret that no
+  longer decrypts marks the connection invalid, so the panel shows
+  "Reconnect Canvas", and drops the user's cached data.
 - The transaction ends before Canvas is called. A fetch's outcome is only
   recorded (and cached) if the connection still holds the token it used:
   one replaced or removed meanwhile is left alone.
@@ -51,6 +55,7 @@ from app.core.canvas_client import (
     CanvasTokenInvalid,
     CanvasUnavailable,
 )
+from app.core.canvas_feed import CanvasFeed, CanvasFeedInvalid, FeedEvent
 from app.core.rate_limit import RateLimiter
 from app.crud.canvas_crud import decrypt_token, expired, get_connection
 from app.models.canvas_connection_model import CanvasConnection
@@ -58,6 +63,7 @@ from app.schemas.canvas_schema import (
     CanvasAnnouncement,
     CanvasAssignment,
     CanvasCourse,
+    CanvasFeedItem,
     CanvasItem,
     CanvasModule,
     CanvasModuleItem,
@@ -72,7 +78,11 @@ TTL = {
     "courses": timedelta(minutes=15),
     "assignments": timedelta(minutes=15),
     "modules": timedelta(minutes=30),
+    # The whole calendar feed, one fetch for both the overview and the linked-task sync.
+    "feed": timedelta(minutes=15),
 }
+# The kinds a calendar feed connection can read; a token connection reads the rest.
+FEED_KINDS = frozenset({"feed"})
 MIN_REFRESH_AGE = timedelta(seconds=30)
 MAX_IN_FLIGHT = 2
 # How long a fetch waits for one of the user's MAX_IN_FLIGHT slots before serving the cache.
@@ -99,6 +109,12 @@ class CanvasCourseHidden(CanvasError):
     code = "canvas_course_hidden"
 
 
+class CanvasNotSupported(CanvasError):
+    """The connection's type can't provide this data, e.g. courses from a calendar feed."""
+
+    code = "canvas_not_supported"
+
+
 @dataclass(frozen=True)
 class Read:
     """Data from Canvas or the cache, and how fresh it is."""
@@ -116,7 +132,7 @@ def read(
     user_id: str,
     kind: str,
     key: tuple,
-    fetch: Callable[[CanvasClient], Any],
+    fetch: Callable[[CanvasClient], Any] | Callable[[CanvasFeed], Any],
     now: datetime,
     refresh: bool = False,
     course_id: int | None = None,
@@ -132,7 +148,11 @@ def read(
     row = get_connection(db, user_id)
     if row is None:
         raise CanvasNotConnected("Canvas isn't connected.")
+    if (row.connection_type == "feed") != (kind in FEED_KINDS):
+        raise CanvasNotSupported(f"A {row.connection_type} connection can't read {kind}.")
     if row.status == "invalid" or expired(row, now):
+        if row.connection_type == "feed":
+            raise CanvasFeedInvalid("Canvas no longer knows the feed.")
         raise CanvasTokenInvalid("The token was rejected or has expired.")
 
     hidden = frozenset(row.hidden_course_ids or [])
@@ -152,7 +172,7 @@ def read(
             raise
         return Read(cached.data, cached.fetched_at, hidden, stale=True)
 
-    base_url, nonce = row.base_url, row.token_nonce
+    connection_type, base_url, nonce = row.connection_type, row.base_url, row.token_nonce
     try:
         token = decrypt_token(row)
     except crypto.DecryptionError:
@@ -166,7 +186,7 @@ def read(
         if not in_flight.acquire(timeout=IN_FLIGHT_WAIT.total_seconds()):
             raise CanvasUnavailable("Too many Canvas requests are already running for this user.")
         try:
-            data = fetch(CanvasClient(base_url, token))
+            data = fetch(CanvasFeed(token) if connection_type == "feed" else CanvasClient(base_url, token))
         finally:
             in_flight.release()
     except CanvasTokenInvalid:
@@ -232,6 +252,48 @@ def fetch_overview(start: datetime, end: datetime) -> Callable[[CanvasClient], d
         return {"upcoming": upcoming, "missing": missing_items, "recently_graded": recently_graded(items, start)}
 
     return fetch
+
+
+@dataclass(frozen=True)
+class FeedEntry:
+    """A calendar feed item as cached, before the caller's time zone is known."""
+
+    # due_at is None for an all-day item.
+    item: CanvasFeedItem
+    # The day an all-day item falls on.
+    day: date | None = None
+
+
+def fetch_feed(feed: CanvasFeed) -> list[FeedEntry]:
+    return [_feed_entry(feed.base_url, event) for event in feed.events()]
+
+
+def feed_zone(connection: CanvasConnection) -> ZoneInfo:
+    """The zone a feed's all-day items are due in: the one stored when it was connected, else UTC."""
+    return ZoneInfo(connection.time_zone or "UTC")
+
+
+def feed_items(entries: list[FeedEntry], tz: ZoneInfo) -> list[CanvasFeedItem]:
+    """The feed's items with every due_at set: an all-day assignment is due at 11:59:59 pm in tz, anything else at 0:00.
+
+    tz is the connection's feed_zone, so the overview and the sync give the same due_at whatever the caller's zone.
+    """
+    items = []
+    for entry in entries:
+        if entry.day is None:
+            items.append(entry.item)
+            continue
+        at = time(23, 59, 59) if entry.item.kind == "assignment" else time()
+        due_at = datetime.combine(entry.day, at, tzinfo=tz)
+        items.append(entry.item.model_copy(update={"due_at": due_at, "day": entry.day}))
+    return items
+
+
+def feed_upcoming(entries: list[FeedEntry], tz: ZoneInfo, start: datetime, end: datetime) -> list[CanvasFeedItem]:
+    """The feed's items due in [start, end), soonest first, like the overview's upcoming list. tz as for feed_items."""
+    upcoming = [item for item in feed_items(entries, tz) if start <= item.due_at < end]
+    upcoming.sort(key=lambda item: (item.due_at, item.id))
+    return upcoming
 
 
 def recently_graded(items: list[CanvasItem], start: datetime) -> list[CanvasItem]:
@@ -321,6 +383,29 @@ def fetch_announcements(course_ids: list[int], today: date) -> Callable[[CanvasC
 
 
 # ── Normalizing Canvas JSON ──────────────────────────────────────────────────
+
+def _feed_entry(base_url: str, event: FeedEvent) -> FeedEntry:
+    # Point an assignment at its own page, as the API's html_url does, rather
+    # than at the calendar the feed links to.
+    if event.kind == "assignment" and event.course_id is not None:
+        html_url = f"{base_url}/courses/{event.course_id}/assignments/{event.id}"
+    else:
+        html_url = canvas_url(base_url, event.url)
+    all_day = not isinstance(event.start, datetime)
+    item = CanvasFeedItem(
+        id=event.id,
+        kind=event.kind,
+        title=event.title,
+        course_id=event.course_id,
+        course_name=event.course_name,
+        due_at=None if all_day else event.start,
+        html_url=html_url,
+        uid=event.uid,
+        all_day=all_day,
+        linkable=event.kind == "assignment",
+    )
+    return FeedEntry(item=item, day=event.start if all_day else None)
+
 
 def _int(value) -> int | None:
     if isinstance(value, bool):

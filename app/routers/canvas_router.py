@@ -1,9 +1,10 @@
 """
 Canvas LMS endpoints: the connection, and the data shown in the home-page panel.
 
-GET    /canvas/connection       — the masked connection status, never the token
+GET    /canvas/connection       — the masked connection status and its capabilities, never the token or feed URL
 PUT    /canvas/connection       — connect, replace or reconnect: checks the token with Canvas, then stores it encrypted
-POST   /canvas/connection/test  — re-checks the stored token with Canvas
+PUT    /canvas/connection/feed  — the same with a calendar feed link: fetches and parses it, then stores it encrypted
+POST   /canvas/connection/test  — re-checks the stored token with Canvas, or fetches the feed
 PATCH  /canvas/connection       — changes settings (the courses to hide)
 DELETE /canvas/connection       — hard-deletes the connection and its token
 
@@ -13,6 +14,12 @@ GET    /canvas/courses/{course_id}/modules     — a course's modules and their 
 GET    /canvas/courses/{course_id}/assignments — a course's assignments and quizzes, with the user's submissions
 GET    /canvas/announcements                   — the last 14 days of announcements
 POST   /canvas/linked-tasks/sync               — tasks added from Canvas: submitted yet, and due date changes
+
+A calendar feed connection (core/canvas_feed.py) has dates only: the
+overview's upcoming list (missing and recently_graded stay empty) and the
+linked-task sync's due dates. Courses, modules, assignments and
+announcements answer 404 canvas_not_supported for it; GET /canvas/connection
+says which type is connected and what it can show.
 
 The read routes proxy Canvas through a short cache (crud/canvas_data_crud.py)
 and return fetched_at, busy and stale with the data. Demo sandboxes get
@@ -26,8 +33,9 @@ handing a real Canvas token to a throwaway account. Canvas-specific failures ret
 the detail (see core/canvas_client.py), so the frontend can show the right
 message: canvas_url_invalid, canvas_not_canvas, canvas_token_invalid,
 canvas_forbidden (422), canvas_account_changed (409), canvas_not_connected (404),
-canvas_unavailable (502) and canvas_not_configured (503, the server has no
-CANVAS_TOKEN_KEY). The read routes answer canvas_token_invalid with 409
+canvas_feed_url_invalid and canvas_feed_invalid (422: a feed link that isn't
+one, or one Canvas doesn't know), canvas_unavailable (502) and
+canvas_not_configured (503, the server has no CANVAS_TOKEN_KEY). The read routes answer canvas_token_invalid with 409
 ("Reconnect Canvas"), and add canvas_busy (502: Canvas is rate-limiting and
 nothing is cached), canvas_course_hidden and canvas_course_not_found (404).
 """
@@ -35,7 +43,9 @@ nothing is cached), canvas_course_hidden and canvas_course_not_found (404).
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
 
 from app.core import canvas_cache, crypto
@@ -54,12 +64,13 @@ from app.crud.canvas_crud import (
     CanvasAccountChanged,
     check_connection,
     connect,
+    connect_feed,
     connection_out,
     delete_connection,
     get_connection,
     update_connection,
 )
-from app.crud.canvas_data_crud import CanvasCourseHidden, CanvasNotConnected
+from app.crud.canvas_data_crud import CanvasCourseHidden, CanvasNotConnected, CanvasNotSupported
 from app.database.database import get_db
 from app.schemas.canvas_schema import (
     CanvasAnnouncementsOut,
@@ -68,6 +79,7 @@ from app.schemas.canvas_schema import (
     CanvasConnectionOut,
     CanvasConnectionUpdate,
     CanvasCoursesOut,
+    CanvasFeedConnect,
     CanvasLinkedSyncOut,
     CanvasModulesOut,
     CanvasOverviewOut,
@@ -131,6 +143,52 @@ def connect_canvas(
     return connection_out(row, datetime.now(UTC))
 
 
+class _FeedLinkRoute(APIRoute):
+    """Answers a malformed body with a generic 422 canvas_feed_url_invalid.
+
+    FastAPI's validation errors echo the submitted value, which here may be
+    the feed link (e.g. sent as a non-string, or as the whole body).
+    """
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def route_handler(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="canvas_feed_url_invalid"
+                ) from None
+
+        return route_handler
+
+
+def connect_canvas_feed(
+    body: CanvasFeedConnect,
+    tz: str = Query("UTC", description="The IANA time zone the feed's all-day items are due in."),
+    current_user: UserInfo = Depends(_real_user),
+    db: Session = Depends(get_db),
+):
+    """Fetch and parse the calendar feed, then store its link encrypted. On failure nothing changes."""
+    zone = require_time_zone(tz)
+    _canvas_call_limiter.check(current_user.id)
+    try:
+        row = connect_feed(
+            db, current_user.id, body.feed_url.get_secret_value(), zone.key, body.allow_account_change
+        )
+    except (CanvasError, crypto.EncryptionKeyError) as exc:
+        raise _canvas_http_error(exc) from None
+    canvas_cache.evict_user(current_user.id)
+    return connection_out(row, datetime.now(UTC))
+
+
+router.add_api_route(
+    "/connection/feed", connect_canvas_feed, methods=["PUT"], response_model=CanvasConnectionOut,
+    route_class_override=_FeedLinkRoute,
+)
+
+
 @router.post("/connection/test", response_model=CanvasConnectionOut)
 def test_canvas_connection(
     current_user: UserInfo = Depends(_real_user),
@@ -187,7 +245,7 @@ def _read_http_error(exc: CanvasError | crypto.EncryptionKeyError) -> HTTPExcept
         return HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail="canvas_busy", headers={"Retry-After": "30"}
         )
-    if isinstance(exc, CanvasCourseHidden):
+    if isinstance(exc, CanvasCourseHidden | CanvasNotSupported):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.code)
     return _canvas_http_error(exc)
 
@@ -222,12 +280,23 @@ def read_canvas_overview(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Work due from the start of today through the next 7 days, soonest first, missing and recently graded work."""
+    """Work due from the start of today through the next 7 days, soonest first, missing and recently graded work.
+
+    A calendar feed gives the upcoming work only.
+    """
     zone = require_time_zone(tz)
     today = datetime.now(zone).date()
     start, end = canvas_data_crud.upcoming_window(today, zone)
     if current_user.is_anonymous:
         return CanvasOverviewOut(**_sample(), start=start, end=end, **canvas_sample.overview(today, zone, start, end))
+    connection = get_connection(db, current_user.id)
+    if connection is not None and connection.connection_type == "feed":
+        result = _read(db, current_user, "feed", (), canvas_data_crud.fetch_feed, refresh=refresh)
+        upcoming = canvas_data_crud.feed_upcoming(result.data, canvas_data_crud.feed_zone(connection), start, end)
+        return CanvasOverviewOut(
+            **_freshness(result), start=start, end=end, missing=[], recently_graded=[],
+            upcoming=[item for item in upcoming if item.course_id not in result.hidden_course_ids],
+        )
     result = _read(
         db, current_user, "overview", (zone.key, today.isoformat()),
         canvas_data_crud.fetch_overview(start, end), refresh=refresh,

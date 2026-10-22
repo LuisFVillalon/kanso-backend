@@ -9,7 +9,9 @@ completes a task itself. When the assignment's due date differs from the one
 the last sync saw (canvas_due_at), the task's due_date and due_time are moved
 to it, in the caller's time zone, to the minute (an assignment with no due
 date clears them). A due date the user changed while Canvas's stayed the
-same is left alone.
+same is left alone. The first sync from another source than the one that
+stored those values (canvas_due_source: a token, or a calendar feed) only
+records the new source's, without moving the task.
 
 The course comes from canvas_html_url (/courses/{id}/...), which must be on
 the connection's Canvas host. Each course's assignments are read through
@@ -20,6 +22,15 @@ synced=false and is left alone: no course in its link, a course or
 assignment Canvas no longer shows, a course past the cap, or Canvas busy
 or down partway through. If Canvas is busy or down before any course is
 read, the error is raised instead.
+
+With a calendar feed connection, sync() reads the feed once (sharing the
+overview's cache) and matches each open task that follows an assignment by
+its feed UID, event-assignment-<canvas_assignment_id>. Only due dates sync:
+a feed has no submissions, so submitted is always false. All-day items are
+due in the connection's time_zone, whatever the caller's, and are compared
+by date with the task's canvas_due_date, with no zone involved. A
+task whose item isn't in the feed, or whose link is on another school's
+host, comes back with synced=false and is left alone.
 """
 
 import re
@@ -35,8 +46,9 @@ from app.crud import canvas_data_crud, canvas_sample
 from app.crud.base import archived_filter, deleted_filter
 from app.crud.canvas_crud import get_connection
 from app.crud.canvas_data_crud import CanvasNotConnected, canvas_url
+from app.models.canvas_connection_model import CanvasConnection
 from app.models.task_model import Task as TaskModel
-from app.schemas.canvas_schema import CanvasAssignment, CanvasLinkedTaskSync
+from app.schemas.canvas_schema import CanvasAssignment, CanvasFeedItem, CanvasItem, CanvasLinkedTaskSync
 
 MAX_SYNC_COURSES = 20
 _COURSE_PATH = re.compile(r"/courses/(\d+)(?:/|$)")
@@ -69,10 +81,33 @@ def _unsynced(task_id: int) -> CanvasLinkedTaskSync:
     return CanvasLinkedTaskSync(task_id=task_id, synced=False)
 
 
-def _apply(task: TaskModel, assignment: CanvasAssignment, zone: ZoneInfo) -> CanvasLinkedTaskSync:
+def _due_moved(task: TaskModel, assignment: CanvasItem) -> bool:
+    """Whether Canvas's due date differs from the one the task last stored.
+
+    An all-day feed item is a date: it moved exactly when it isn't the stored
+    canvas_due_date. Without one (a task linked without it), the stored
+    instant's date in the zone feed_items set the item's due_at in is used.
+    """
+    if isinstance(assignment, CanvasFeedItem) and assignment.day is not None:
+        if task.canvas_due_date is not None:
+            return task.canvas_due_date != assignment.day
+        if task.canvas_due_at is not None:
+            return task.canvas_due_at.astimezone(assignment.due_at.tzinfo).date() != assignment.day
+    return assignment.due_at != task.canvas_due_at
+
+
+def _apply(task: TaskModel, assignment: CanvasItem, zone: ZoneInfo) -> CanvasLinkedTaskSync:
     """Move the task's due date to the assignment's if Canvas changed it since the last sync, and report its state."""
     changed = False
-    if assignment.due_at != task.canvas_due_at:
+    feed = isinstance(assignment, CanvasFeedItem)
+    source = "feed" if feed else "token"
+    switched = (task.canvas_due_source or "token") != source
+    moved = not switched and _due_moved(task, assignment)
+    task.canvas_due_source = source
+    task.canvas_due_date = assignment.day if feed else None
+    if switched:
+        task.canvas_due_at = assignment.due_at
+    if moved:
         if assignment.due_at is None:
             due_date, due_time = None, None
         else:
@@ -100,6 +135,9 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
     Returns the results with fetched_at (the oldest course read), busy and
     stale, like the panel's read routes.
     """
+    connection = get_connection(db, user_id)
+    if connection is not None and connection.connection_type == "feed":
+        return _sync_feed(db, user_id, connection, zone, now, refresh)
     links = [(t.id, t.canvas_assignment_id, t.canvas_html_url) for t in _open_linked_tasks(db, user_id)]
     if not links:
         return {"fetched_at": now, "results": []}
@@ -148,6 +186,40 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
         "stale": any(r.stale for r in reads) or error is not None,
         "results": results,
     }
+
+
+def _feed_uid(task: TaskModel) -> str:
+    """The feed UID of the assignment a task follows."""
+    return f"event-assignment-{task.canvas_assignment_id}"
+
+
+def _sync_feed(
+    db: Session, user_id: str, connection: CanvasConnection, zone: ZoneInfo, now: datetime, refresh: bool
+) -> dict:
+    """sync() against the calendar feed. See the module docstring."""
+    base_url = connection.base_url
+    links = [(t.id, _feed_uid(t)) for t in _open_linked_tasks(db, user_id)]
+    if not links:
+        return {"fetched_at": now, "results": []}
+    # The feed is read before any task changes: read() commits the session.
+    result = canvas_data_crud.read(db, user_id, "feed", (), canvas_data_crud.fetch_feed, now, refresh=refresh)
+    feed_zone = canvas_data_crud.feed_zone(connection)
+    items = {item.uid: item for item in canvas_data_crud.feed_items(result.data, feed_zone)}
+
+    results = []
+    tasks = {t.id: t for t in _open_linked_tasks(db, user_id, [task_id for task_id, _ in links])}
+    for task_id, uid in links:
+        task = tasks.get(task_id)
+        item = items.get(uid)
+        if (
+            task is None or item is None or _feed_uid(task) != uid
+            or (task.canvas_html_url is not None and canvas_url(base_url, task.canvas_html_url) is None)
+        ):
+            results.append(_unsynced(task_id))
+        else:
+            results.append(_apply(task, item, zone))
+    db.commit()
+    return {"fetched_at": result.fetched_at, "busy": result.busy, "stale": result.stale, "results": results}
 
 
 def sync_sample(db: Session, user_id: str, zone: ZoneInfo, today: date) -> list[CanvasLinkedTaskSync]:

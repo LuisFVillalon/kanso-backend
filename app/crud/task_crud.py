@@ -6,6 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.crud.base import archived_filter, deleted_filter, get_owned
+from app.crud.canvas_crud import get_connection
 from app.crud.tag_crud import set_item_tags
 from app.crud.trash_crud import get_trashed, purge_expired
 from app.models.task_model import Task as TaskModel
@@ -83,6 +84,14 @@ def _drop_taken_canvas_link(db: Session, user_id: str, task: TaskModel) -> None:
     ):
         task.canvas_assignment_id = None
         task.canvas_due_at = None
+        task.canvas_due_date = None
+        task.canvas_due_source = None
+
+
+def _canvas_source(db: Session, user_id: str) -> str:
+    """The connection a task linked now takes its Canvas due values from: "feed" or "token"."""
+    connection = get_connection(db, user_id)
+    return "feed" if connection is not None and connection.connection_type == "feed" else "token"
 
 
 def _validate_canvas_unique(
@@ -184,6 +193,8 @@ def create_task(db: Session, task: TaskCreate, user_id: str):
         canvas_assignment_id=task.canvas_assignment_id,
         canvas_html_url=task.canvas_html_url,
         canvas_due_at=task.canvas_due_at if task.canvas_assignment_id is not None else None,
+        canvas_due_date=task.canvas_due_date if task.canvas_assignment_id is not None else None,
+        canvas_due_source=_canvas_source(db, user_id) if task.canvas_assignment_id is not None else None,
         user_id=user_id,
     )
     set_item_tags(db, db_task, task.tags, user_id)
@@ -289,6 +300,8 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
         _validate_canvas_unique(db, user_id, assignment_id, exclude_task_id=task_id)
     if relinked:
         db_task.canvas_due_at = task.canvas_due_at if assignment_id is not None else None
+        db_task.canvas_due_date = task.canvas_due_date if assignment_id is not None else None
+        db_task.canvas_due_source = _canvas_source(db, user_id) if assignment_id is not None else None
 
     # Only a changed link is checked, so re-saving a task under its current
     # parent never trips the loop or archive checks.
