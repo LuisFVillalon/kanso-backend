@@ -281,8 +281,9 @@ def test_connecting_a_feed_stores_only_ciphertext_and_returns_a_masked_status(cl
     # Without tz, all-day items are due in UTC.
     assert body["time_zone"] == "UTC"
     assert body["capabilities"] == {
-        "upcoming": True, "missing": False, "recently_graded": False, "courses": False, "modules": False,
-        "assignments": False, "announcements": False, "link_tasks": True, "submission_status": False,
+        "upcoming": True, "classes": True, "missing": False, "recently_graded": False, "courses": False,
+        "modules": False, "assignments": False, "announcements": False, "link_tasks": True,
+        "submission_status": False,
     }
     assert CODE not in response.text and CODE[:-4] not in client.get("/canvas/connection").text
     assert len(feed.requests) == 1
@@ -519,6 +520,55 @@ def test_the_feed_is_cached_and_hidden_courses_are_left_out(feed_connected, feed
     assert len(feed.requests) == 1
 
 
+def test_the_all_range_lists_the_whole_feed_ahead_from_the_cached_feed(feed_connected, feed):
+    week = _overview(feed_connected)
+    response = feed_connected.get("/canvas/overview", params={"tz": "America/Los_Angeles", "range": "all"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["range"] == "all"
+    # Way later is a month out; Already due is past.
+    assert [i["uid"] for i in body["upcoming"]] == [i["uid"] for i in week["upcoming"]] + ["event-assignment-103"]
+    assert body["missing"] == [] and body["recently_graded"] == []
+    assert len(feed.requests) == 1
+
+
+def _classes(client, **params) -> list[dict]:
+    response = client.get("/canvas/classes", params={"tz": "America/Los_Angeles", **params})
+    assert response.status_code == 200, response.text
+    return response.json()["classes"]
+
+
+def test_a_feeds_classes_come_from_its_items(feed_connected, feed):
+    feed.events.append(_event("event-assignment-105", "Old lab [BIO 100]", PAST, _calendar_url(15, "assignment_105")))
+    classes = _classes(feed_connected)
+    assert [c["code"] for c in classes] == ["BIO 100", "COMM 103", "CS 460-01 Fall 2026"]
+    bio, comm, cs = classes
+    assert {k: v for k, v in cs.items() if k != "next_due"} == {
+        "id": 11, "code": "CS 460-01 Fall 2026", "name": None, "term": None,
+        "html_url": f"{BASE_URL}/courses/11", "hidden": False, "due_this_week": 2, "upcoming": 3,
+    }
+    assert cs["next_due"]["uid"] == "event-assignment-101" and cs["next_due"]["linkable"] is True
+    assert (comm["due_this_week"], comm["upcoming"], comm["next_due"]["day"]) == (1, 1, ALL_DAY.isoformat())
+    # A class with only past items is still listed, with nothing due.
+    assert (bio["id"], bio["upcoming"], bio["next_due"]) == (15, 0, None)
+
+    # Classes and the overview share the one cached feed, and never touch the token API.
+    _overview(feed_connected)
+    assert len(feed.requests) == 1
+
+
+def test_feed_users_can_hide_a_class(feed_connected, feed):
+    response = feed_connected.patch("/canvas/connection", json={"hidden_course_ids": [11]})
+    assert response.status_code == 200 and response.json()["hidden_course_ids"] == [11]
+    assert [c["id"] for c in _classes(feed_connected)] == [12]
+    everything = _classes(feed_connected, include_hidden="true")
+    assert [(c["id"], c["hidden"]) for c in everything] == [(12, False), (11, True)]
+    upcoming = feed_connected.get(
+        "/canvas/overview", params={"tz": "America/Los_Angeles", "range": "all"}
+    ).json()["upcoming"]
+    assert [i["uid"] for i in upcoming] == ["event-calendar-event-56", "event-assignment-102"]
+
+
 def test_canvas_down_serves_the_cached_feed_marked_stale(feed_connected, feed, monkeypatch):
     first = _overview(feed_connected)
     feed.respond = lambda request: httpx.Response(503, text="Service Unavailable")
@@ -579,6 +629,26 @@ def test_feed_assignments_can_be_added_to_tasks_once(feed_connected):
         "code": "canvas_task_exists", "message": "An open task already follows this Canvas assignment.",
         "task_id": task["id"],
     }
+
+
+@pytest.mark.parametrize(
+    ("tags", "names"),
+    [
+        # The class's own tag, as the panel picks it by default.
+        ([{"name": "CS 460-01 Fall 2026", "color": "#006BCB"}], ["CS 460-01 Fall 2026"]),
+        # The user's own tags alongside it, or instead of it.
+        ([{"name": "CS 460-01 Fall 2026"}, {"name": "Exam prep", "color": "#aa3300"}],
+         ["CS 460-01 Fall 2026", "Exam prep"]),
+        ([{"name": "Exam prep"}, {"name": "School"}], ["Exam prep", "School"]),
+        ([], []),
+    ],
+)
+def test_a_task_added_from_canvas_takes_the_tags_the_user_chose(feed_connected, tags, names):
+    by_uid = {i["uid"]: i for i in _overview(feed_connected)["upcoming"]}
+    response = _add(feed_connected, by_uid["event-assignment-101"], tags=tags)
+    assert response.status_code == 200, response.text
+    assert sorted(tag["name"] for tag in response.json()["tags"]) == names
+    assert response.json()["canvas_assignment_id"] == 101
 
 
 def test_sync_follows_the_feeds_due_dates_without_submission_status(feed_connected, db, feed):
