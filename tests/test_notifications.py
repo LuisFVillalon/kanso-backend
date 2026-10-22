@@ -54,7 +54,7 @@ def _by_id(db, now: datetime, tz=UTC_TZ) -> dict:
     return {n.id: n for n in get_notifications(db, USER_ID, tz, now)}
 
 
-# ── Reminders and final warnings ─────────────────────────────────────────────
+# ── Reminders ────────────────────────────────────────────────────────────────
 
 def test_reminder_for_a_timed_task_lasts_until_it_is_due(db):
     task = _task(db, "Essay", DAY, time(16, 0))
@@ -275,8 +275,7 @@ def test_quiet_hours_hold_alerts_until_they_end(db):
 def test_alerts_held_past_the_point_they_apply_are_dropped(db):
     update_preferences(db, USER_ID, {"quiet_hours_start": "22:00", "quiet_hours_end": "07:00"})
     _task(db, "At seven", DAY, time(7, 0))
-    # The reminder (05:00) and final warning (06:30) are held until 07:00,
-    # when the task is already due.
+    # The reminder (05:00) is held until 07:00, when the task is already due.
     assert _ids(db, _utc(DAY, 7, 0)) == []
 
 
