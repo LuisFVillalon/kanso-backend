@@ -46,13 +46,6 @@ def _ids(resp):
     return {row["id"] for row in resp.json()}
 
 
-def _link_directly(db, child_id, parent_id):
-    """Link a task below another straight in the database, as trees deeper
-    than the one-level rule could be saved before it existed."""
-    db.get(Task, child_id).parent_task_id = parent_id
-    db.commit()
-
-
 def _trash(client):
     resp = client.get("/get-trash")
     assert resp.status_code == 200, resp.text
@@ -370,8 +363,7 @@ def test_expired_deleted_tag_is_not_revived_by_attaching_its_name(client, db):
 def test_deleting_a_task_takes_its_subtasks_along(client, db):
     parent = _create(client, "task", title="Parent")
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
-    grandchild = _create(client, "task", title="Grandchild")
-    _link_directly(db, grandchild["id"], child["id"])
+    grandchild = _create(client, "task", title="Grandchild", parent_task_id=child["id"])
     unrelated = _create(client, "task", title="Unrelated")
 
     _delete(client, "task", parent["id"])
@@ -398,12 +390,11 @@ def test_restoring_a_task_keeps_subtasks_deleted_on_their_own(client):
     assert [i["id"] for i in _trash(client)] == [deleted_first["id"]]
 
 
-def test_restoring_a_subtask_restores_its_deleted_ancestors_only(client, db):
+def test_restoring_a_subtask_restores_its_deleted_ancestors_only(client):
     root = _create(client, "task", title="Root")
-    parent = _create(client, "task", title="Parent")
+    parent = _create(client, "task", title="Parent", parent_task_id=root["id"])
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
     sibling = _create(client, "task", title="Sibling", parent_task_id=parent["id"])
-    _link_directly(db, parent["id"], root["id"])
 
     _delete(client, "task", root["id"])
     assert client.patch(f"/restore-task/{child['id']}").status_code == 200
@@ -412,7 +403,7 @@ def test_restoring_a_subtask_restores_its_deleted_ancestors_only(client, db):
     assert [i["id"] for i in _trash(client)] == [sibling["id"]]
 
 
-def test_restoring_a_subtask_whose_parent_was_linked_meanwhile_restores_it_on_its_own(client):
+def test_restoring_a_subtask_whose_parent_was_linked_meanwhile_keeps_it_under_that_parent(client):
     parent = _create(client, "task", title="Parent")
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
     other = _create(client, "task", title="Other")
@@ -422,12 +413,12 @@ def test_restoring_a_subtask_whose_parent_was_linked_meanwhile_restores_it_on_it
     assert resp.status_code == 200, resp.text
     restored = client.patch(f"/restore-task/{child['id']}").json()
 
-    assert (restored["parent_task_id"], restored["position"]) == (None, None)
+    assert (restored["parent_task_id"], restored["position"]) == (parent["id"], child["position"])
     tasks = {t["id"]: t for t in client.get("/get-tasks").json()}
     assert tasks[parent["id"]]["parent_task_id"] == other["id"]
 
 
-def test_restoring_a_subtask_leaves_a_parent_deleted_after_relinking_in_the_trash(client):
+def test_restoring_a_subtask_restores_a_parent_deleted_after_relinking(client):
     parent = _create(client, "task", title="Parent")
     child = _create(client, "task", title="Child", parent_task_id=parent["id"])
     other = _create(client, "task", title="Other")
@@ -437,9 +428,64 @@ def test_restoring_a_subtask_leaves_a_parent_deleted_after_relinking_in_the_tras
     _delete(client, "task", parent["id"])
     restored = client.patch(f"/restore-task/{child['id']}").json()
 
-    assert restored["parent_task_id"] is None
-    assert _ids(client.get("/get-tasks")) == {child["id"], other["id"]}
-    assert [i["id"] for i in _trash(client)] == [parent["id"]]
+    assert restored["parent_task_id"] == parent["id"]
+    tasks = {t["id"]: t for t in client.get("/get-tasks").json()}
+    assert set(tasks) == {child["id"], parent["id"], other["id"]}
+    assert tasks[parent["id"]]["parent_task_id"] == other["id"]
+    assert _trash(client) == []
+
+
+def test_deleting_a_middle_task_takes_only_the_tree_below_it(client):
+    root = _create(client, "task", title="Root")
+    middle = _create(client, "task", title="Middle", parent_task_id=root["id"])
+    leaf = _create(client, "task", title="Leaf", parent_task_id=middle["id"])
+    below_leaf = _create(client, "task", title="Below leaf", parent_task_id=leaf["id"])
+    sibling = _create(client, "task", title="Sibling", parent_task_id=root["id"])
+
+    _delete(client, "task", middle["id"])
+
+    assert _ids(client.get("/get-tasks")) == {root["id"], sibling["id"]}
+    assert {i["id"] for i in _trash(client)} == {middle["id"], leaf["id"], below_leaf["id"]}
+
+    # Restoring the deepest task brings back the chain above it, not its relatives.
+    restored = client.patch(f"/restore-task/{below_leaf['id']}").json()
+    assert restored["parent_task_id"] == leaf["id"]
+    assert _ids(client.get("/get-tasks")) == {root["id"], sibling["id"], middle["id"], leaf["id"], below_leaf["id"]}
+    assert _trash(client) == []
+
+
+def test_restoring_a_middle_task_brings_back_its_tree_and_its_deleted_ancestors(client):
+    root = _create(client, "task", title="Root")
+    middle = _create(client, "task", title="Middle", parent_task_id=root["id"])
+    leaf = _create(client, "task", title="Leaf", parent_task_id=middle["id"])
+    below_leaf = _create(client, "task", title="Below leaf", parent_task_id=leaf["id"])
+    dropped = _create(client, "task", title="Dropped", parent_task_id=leaf["id"])
+
+    _delete(client, "task", dropped["id"])
+    _delete(client, "task", root["id"])
+    client.patch(f"/restore-task/{middle['id']}")
+
+    assert _ids(client.get("/get-tasks")) == {root["id"], middle["id"], leaf["id"], below_leaf["id"]}
+    assert [i["id"] for i in _trash(client)] == [dropped["id"]]
+
+
+def test_purging_a_task_takes_its_whole_tree_and_detaches_the_rest(client, db):
+    root = _create(client, "task", title="Root")
+    middle = _create(client, "task", title="Middle", parent_task_id=root["id"])
+    leaf = _create(client, "task", title="Leaf", parent_task_id=middle["id"])
+    below_leaf = _create(client, "task", title="Below leaf", parent_task_id=leaf["id"])
+    dropped = _create(client, "task", title="Dropped", parent_task_id=leaf["id"])
+
+    _delete(client, "task", dropped["id"])
+    _delete(client, "task", root["id"])
+    assert client.delete(f"/purge-task/{root['id']}").status_code == 204
+
+    db.expire_all()
+    for gone in (root, middle, leaf, below_leaf):
+        assert db.get(Task, gone["id"]) is None
+    [left] = _trash(client)
+    assert (left["id"], left["parent_task_id"]) == (dropped["id"], None)
+    assert client.patch(f"/restore-task/{dropped['id']}").json()["parent_task_id"] is None
 
 
 def test_purging_a_task_takes_the_subtasks_deleted_with_it(client, db):
@@ -469,6 +515,20 @@ def test_expired_parent_purge_detaches_remaining_subtasks(client, db):
     db.expire_all()
     assert db.get(Task, parent_id) is None
     assert client.patch(f"/restore-task/{later.id}").json()["parent_task_id"] is None
+
+
+def test_expired_tree_purge_removes_every_level(client, db):
+    expired = TRASH_RETENTION + timedelta(days=1)
+    root = _row(db, "task", deleted_ago=expired)
+    middle = _row(db, "task", parent_task_id=root.id, deleted_ago=expired)
+    leaf = _row(db, "task", parent_task_id=middle.id, deleted_ago=expired)
+    later = _row(db, "task", parent_task_id=leaf.id, deleted_ago=timedelta(days=1))
+    ids = [root.id, middle.id, leaf.id]
+
+    [item] = _trash(client)
+    assert (item["id"], item["parent_task_id"]) == (later.id, None)
+    db.expire_all()
+    assert all(db.get(Task, i) is None for i in ids)
 
 
 def test_deleted_task_cannot_be_a_parent(client):

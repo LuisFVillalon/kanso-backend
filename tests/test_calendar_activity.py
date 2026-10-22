@@ -87,6 +87,18 @@ def test_scheduled_tasks_cover_due_dates_in_range(client, db):
     assert sunday["completed"] is True
 
 
+def test_scheduled_subtasks_name_their_parent(client, db):
+    root = _task(db, "Course project")
+    middle = _task(db, "Milestone", parent_task_id=root.id)
+    _task(db, "Write tests", WEEK_START, parent_task_id=middle.id)
+    _task(db, "Standalone", WEEK_START)
+    db.commit()
+
+    scheduled = {t["title"]: t for t in _activity(client)["scheduled_tasks"]}
+    assert scheduled["Write tests"]["parent_task"] == {"id": middle.id, "title": "Milestone"}
+    assert scheduled["Standalone"]["parent_task"] is None
+
+
 def test_completed_tasks_are_bucketed_by_the_callers_local_days(client, db):
     # 03:00 UTC on Monday is still Sunday evening (20:00) in Pacific time.
     _task(db, "Late Sunday Pacific", completed=True, completed_date=datetime(2026, 10, 12, 3, 0))

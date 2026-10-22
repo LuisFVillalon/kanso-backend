@@ -40,7 +40,7 @@ def get_calendar_activity(
 
     visible_tasks = (
         db.query(TaskModel)
-        .options(selectinload(TaskModel.tags))
+        .options(selectinload(TaskModel.tags), selectinload(TaskModel.parent_task))
         .filter(TaskModel.user_id == user_id, TaskModel.deleted_at.is_(None))
     )
     if not include_archived:

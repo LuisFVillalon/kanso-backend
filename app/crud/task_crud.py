@@ -3,9 +3,9 @@ from typing import Literal
 
 from fastapi import HTTPException
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.crud.base import archived_filter, deleted_filter, get_owned, list_owned
+from app.crud.base import archived_filter, deleted_filter, get_owned
 from app.crud.tag_crud import set_item_tags
 from app.crud.trash_crud import get_trashed, purge_expired
 from app.models.task_model import Task as TaskModel
@@ -13,8 +13,17 @@ from app.schemas.task_schema import LinkedTaskRef, TaskCreate
 
 
 def get_tasks(db: Session, user_id: str, archived: bool = False):
-    """Return the user's active tasks, or only their archived ones when archived=True. Deleted tasks are left out."""
-    return list_owned(db, TaskModel, user_id, archived)
+    """Return the user's active tasks, or only their archived ones when archived=True. Deleted tasks are left out.
+
+    Each task's parent is loaded alongside for its parent_task summary, since
+    an archived subtask's parent is usually not in the same list.
+    """
+    return (
+        db.query(TaskModel)
+        .options(selectinload(TaskModel.parent_task))
+        .filter(TaskModel.user_id == user_id, deleted_filter(TaskModel, False), archived_filter(TaskModel, archived))
+        .all()
+    )
 
 
 def _priority_taken(db: Session, user_id: str, priority: int, exclude_task_id: int | None = None) -> bool:
@@ -117,25 +126,13 @@ def _ancestor_ids(db: Session, task: TaskModel, user_id: str) -> set[int]:
     return found
 
 
-def _has_linked_tasks(db: Session, task_id: int, user_id: str) -> bool:
-    """True if any undeleted task, archived ones included, is linked under this one."""
-    return (
-        db.query(TaskModel.id)
-        .filter(TaskModel.parent_task_id == task_id, TaskModel.user_id == user_id, deleted_filter(TaskModel, False))
-        .first()
-        is not None
-    )
-
-
 def _validate_link(db: Session, parent: TaskModel, child_id: int | None, user_id: str) -> None:
     """Raise 400 unless a task (child_id, or None for a new one) can be linked under parent.
 
-    Linked tasks go one level deep: a task linked under another can't have
-    linked tasks of its own, and a task that has them can't be linked under
-    another. That alone rules out loops for links saved through the API; the
-    explicit loop check also covers deeper trees saved before the rule.
-    Archived tasks can't take new linked tasks, since they're hidden from
-    the lists the links would show in.
+    Linked tasks nest to any depth, so a task can't be linked under itself
+    or under any task below it, which would make a loop. Archived tasks
+    can't take new linked tasks, since they're hidden from the lists the
+    links would show in.
     """
     if child_id is not None:
         if child_id == parent.id:
@@ -147,16 +144,6 @@ def _validate_link(db: Session, parent: TaskModel, child_id: int | None, user_id
     if parent.archived_at is not None:
         raise HTTPException(
             status_code=400, detail=f"Task {parent.id} is archived; restore it before linking tasks to it"
-        )
-    if parent.parent_task_id is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {parent.id} is itself a linked task, and linked tasks can't have their own",
-        )
-    if child_id is not None and _has_linked_tasks(db, child_id, user_id):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task {child_id} has linked tasks of its own, so it can't be linked under another task",
         )
 
 
@@ -253,7 +240,8 @@ def update_task_status(db: Session, task_id: int, user_id: str, with_linked: boo
     """Toggle a task's completed status and update completed_date accordingly.
 
     With with_linked=True, completing a task also completes its open, active
-    linked tasks in the same transaction. Reopening a task leaves them as they are.
+    linked tasks at every depth in the same transaction. Reopening a task
+    leaves them as they are.
     """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:
@@ -263,20 +251,10 @@ def update_task_status(db: Session, task_id: int, user_id: str, with_linked: boo
     task.completed_date = now if task.completed else None
     _drop_taken_canvas_link(db, user_id, task)
     if with_linked and task.completed:
-        open_children = (
-            db.query(TaskModel)
-            .filter(
-                TaskModel.parent_task_id == task.id,
-                TaskModel.user_id == user_id,
-                TaskModel.completed.is_not(True),
-                deleted_filter(TaskModel, False),
-                archived_filter(TaskModel, False),
-            )
-            .all()
-        )
-        for child in open_children:
-            child.completed = True
-            child.completed_date = now
+        for child in _descendants(db, task, user_id):
+            if not child.completed and child.archived_at is None:
+                child.completed = True
+                child.completed_date = now
     db.commit()
     db.refresh(task)
     return task
@@ -313,7 +291,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
         db_task.canvas_due_at = task.canvas_due_at if assignment_id is not None else None
 
     # Only a changed link is checked, so re-saving a task under its current
-    # parent works even for links made before the one-level rule.
+    # parent never trips the loop or archive checks.
     if task.parent_task_id != db_task.parent_task_id:
         if task.parent_task_id is None:
             db_task.position = None
@@ -451,20 +429,6 @@ def _bring_back(db: Session, tasks: list[TaskModel], field: str, user_id: str) -
         _drop_taken_canvas_link(db, user_id, t)
 
 
-def _keeps_parent_on_restore(db: Session, task: TaskModel, user_id: str) -> bool:
-    """True if a trashed task can come back under its old parent without going two levels deep.
-
-    That holds when the parent was deleted along with it (the tree comes back
-    as it was), or is still restorable and has no parent of its own.
-    """
-    parent = get_owned(db, TaskModel, task.parent_task_id, user_id) or get_owned(
-        db, TaskModel, task.parent_task_id, user_id, trashed=True
-    )
-    if not parent:
-        return False
-    return parent.deleted_at == task.deleted_at or parent.parent_task_id is None
-
-
 def restore_task(db: Session, task_id: int, user_id: str):
     """Restore a task from the trash with the subtasks deleted along with it. Returns None if not in the trash.
 
@@ -472,15 +436,13 @@ def restore_task(db: Session, task_id: int, user_id: str):
     stay in the trash; deleted ancestors are restored too (not their other
     subtasks), so the task never comes back under a hidden parent; and a
     priority taken in the meantime is dropped. A task deleted while archived
-    is restored to the archive. A task whose old parent is gone, or has since
-    become a linked task itself, comes back on its own instead.
+    is restored to the archive. A task comes back under its old parent
+    wherever that parent sits now; one whose parent was purged comes back on
+    its own, since the purge detached it.
     """
     task = get_trashed(db, TaskModel, task_id, user_id)
     if not task:
         return None
-    if task.parent_task_id is not None and not _keeps_parent_on_restore(db, task, user_id):
-        task.parent_task_id = None
-        task.position = None
     stamp = task.deleted_at
     restored = [
         *_hidden_ancestors(db, task, user_id, "deleted_at"),
@@ -518,7 +480,7 @@ def set_linked_tasks(db: Session, task_id: int, children: list[LinkedTaskRef], u
     index as its position. Active linked tasks left out are unlinked, not
     deleted. Archived ones stay linked, since the client never sees them.
     Only new links are checked against the rules, so links already under this
-    task re-save even in trees deeper than the one-level rule.
+    task always re-save.
     """
     parent = get_owned(db, TaskModel, task_id, user_id)
     if not parent:
