@@ -77,6 +77,11 @@ class Task(Base):
     # For an all-day calendar feed item, its date as of the last sync, which
     # the feed sync compares instead of canvas_due_at; NULL otherwise.
     canvas_due_date = Column(Date, nullable=True)
+    # Which connection stored the two above, "token" or "feed"; NULL (read as
+    # "token") for tasks linked before it was recorded. The first sync from the
+    # other source only re-records them, since the two give the same due date
+    # in different forms.
+    canvas_due_source = Column(String(8), nullable=True)
     user_id = Column(String(36), nullable=True, index=True)
     # Set when the task is archived; NULL means active.
     archived_at = Column(DateTime(timezone=True), nullable=True)

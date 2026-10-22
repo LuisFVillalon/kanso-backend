@@ -9,7 +9,9 @@ completes a task itself. When the assignment's due date differs from the one
 the last sync saw (canvas_due_at), the task's due_date and due_time are moved
 to it, in the caller's time zone, to the minute (an assignment with no due
 date clears them). A due date the user changed while Canvas's stayed the
-same is left alone.
+same is left alone. The first sync from another source than the one that
+stored those values (canvas_due_source: a token, or a calendar feed) only
+records the new source's, without moving the task.
 
 The course comes from canvas_html_url (/courses/{id}/...), which must be on
 the connection's Canvas host. Each course's assignments are read through
@@ -97,11 +99,14 @@ def _due_moved(task: TaskModel, assignment: CanvasItem) -> bool:
 def _apply(task: TaskModel, assignment: CanvasItem, zone: ZoneInfo) -> CanvasLinkedTaskSync:
     """Move the task's due date to the assignment's if Canvas changed it since the last sync, and report its state."""
     changed = False
-    moved = _due_moved(task, assignment)
-    if isinstance(assignment, CanvasFeedItem):
-        task.canvas_due_date = assignment.day
-    elif moved:
-        task.canvas_due_date = None
+    feed = isinstance(assignment, CanvasFeedItem)
+    source = "feed" if feed else "token"
+    switched = (task.canvas_due_source or "token") != source
+    moved = not switched and _due_moved(task, assignment)
+    task.canvas_due_source = source
+    task.canvas_due_date = assignment.day if feed else None
+    if switched:
+        task.canvas_due_at = assignment.due_at
     if moved:
         if assignment.due_at is None:
             due_date, due_time = None, None

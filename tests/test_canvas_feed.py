@@ -733,6 +733,71 @@ def test_an_all_day_item_moved_to_another_day_moves_the_task(feed_connected, db,
     assert saved.canvas_due_date == ALL_DAY
 
 
+def _token_sync(client):
+    response = client.post("/canvas/linked-tasks/sync", params={"tz": "America/Los_Angeles"})
+    assert response.status_code == 200, response.text
+    return response.json()["results"][0]
+
+
+def _set_token_speech(canvas, due_at: str):
+    canvas.lists["/api/v1/courses/12/assignments"] = [[
+        {"id": 102, "name": "Speech outline", "due_at": due_at, "html_url": f"{BASE_URL}/courses/12/assignments/102"},
+    ]]
+    canvas_cache.clear()
+
+
+def test_an_edited_all_day_task_survives_switching_from_the_feed_to_a_token(feed_connected, db, canvas):
+    speech = next(i for i in _overview(feed_connected)["upcoming"] if i["uid"] == "event-assignment-102")
+    edited = (ALL_DAY - timedelta(days=1)).isoformat()
+    task = _add(feed_connected, speech, due_date=edited).json()
+    assert _task(db, task["id"]).canvas_due_source == "feed"
+
+    # Canvas's API gives the same 11:59 pm in the school's zone, not the feed's.
+    api_due = datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=ZoneInfo("America/New_York"))
+    _set_token_speech(canvas, api_due.isoformat())
+    assert feed_connected.put("/canvas/connection", json={"base_url": BASE_URL, "token": TOKEN}).status_code == 200
+    result = _token_sync(feed_connected)
+    assert result["synced"] is True and result["due_changed"] is False
+    saved = _task(db, task["id"])
+    assert saved.due_date.date().isoformat() == edited
+    assert saved.canvas_due_source == "token"
+    assert saved.canvas_due_at == api_due and saved.canvas_due_date is None
+
+    # A real change on the token then moves it.
+    _set_token_speech(canvas, (api_due + timedelta(days=1)).isoformat())
+    assert _token_sync(feed_connected)["due_changed"] is True
+    assert _task(db, task["id"]).due_date.date() == (api_due + timedelta(days=1)).astimezone(LA).date()
+
+
+def test_an_edited_all_day_task_survives_switching_from_a_token_to_the_feed(connected, db, feed, canvas):
+    api_due = datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=ZoneInfo("America/New_York"))
+    _set_token_speech(canvas, api_due.isoformat())
+    edited = (ALL_DAY - timedelta(days=1)).isoformat()
+    task = connected.post("/create-task", json={
+        "title": "Speech", "canvas_assignment_id": 102, "canvas_due_at": api_due.isoformat(), "due_date": edited,
+        "canvas_html_url": f"{BASE_URL}/courses/12/assignments/102",
+    }).json()
+    assert _task(db, task["id"]).canvas_due_source == "token"
+
+    response = connected.put("/canvas/connection/feed", params={"tz": "Asia/Tokyo"}, json={"feed_url": FEED_URL})
+    assert response.status_code == 200, response.text
+    result = _sync(connected)["results"][0]
+    assert result["synced"] is True and result["due_changed"] is False
+    saved = _task(db, task["id"])
+    assert saved.due_date.date().isoformat() == edited
+    assert saved.canvas_due_source == "feed" and saved.canvas_due_date == ALL_DAY
+    assert saved.canvas_due_at == datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=ZoneInfo("Asia/Tokyo"))
+
+    # A real change in the feed then moves it.
+    moved = ALL_DAY + timedelta(days=1)
+    feed.events = [e.replace(ALL_DAY.strftime("%Y%m%d"), moved.strftime("%Y%m%d")) if "assignment-102" in e else e
+                   for e in feed.events]
+    canvas_cache.clear()
+    result = _sync(connected)["results"][0]
+    assert result["due_changed"] is True
+    assert _task(db, task["id"]).canvas_due_date == moved
+
+
 def test_sync_leaves_tasks_linked_at_another_school_alone(feed_connected, db):
     other = feed_connected.post("/create-task", json={
         "title": "Other school", "canvas_assignment_id": 101,
