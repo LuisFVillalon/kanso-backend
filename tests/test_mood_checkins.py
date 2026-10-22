@@ -221,7 +221,7 @@ def test_mood_tags_without_check_ins_are_just_the_defaults(client):
 
 # ── Profile settings ─────────────────────────────────────────────────────────
 
-DEFAULT_SETTINGS = {"daily": True, "weekly": False, "monthly": False, "remind": "shutoff", "show_in_reports": True}
+DEFAULT_SETTINGS = {"daily": True, "weekly": False, "monthly": False}
 
 
 def test_profile_returns_default_mood_settings_until_changed(client, db):
@@ -234,8 +234,8 @@ def test_saving_mood_settings_changes_only_the_fields_given(client):
     resp = client.post("/save-profile", json={"name": "Test", "mood_checkins": {"weekly": True}})
     assert resp.json()["mood_checkins"] == {**DEFAULT_SETTINGS, "weekly": True}
 
-    resp = client.post("/save-profile", json={"name": "Test", "mood_checkins": {"daily": False, "remind": "off"}})
-    assert resp.json()["mood_checkins"] == {**DEFAULT_SETTINGS, "weekly": True, "daily": False, "remind": "off"}
+    resp = client.post("/save-profile", json={"name": "Test", "mood_checkins": {"daily": False}})
+    assert resp.json()["mood_checkins"] == {**DEFAULT_SETTINGS, "weekly": True, "daily": False}
 
     # Saving other profile fields leaves them alone.
     resp = client.post("/save-profile", json={"name": "Renamed"})
@@ -243,14 +243,23 @@ def test_saving_mood_settings_changes_only_the_fields_given(client):
 
     # null restores one field's default; a null object restores them all.
     resp = client.post("/save-profile", json={"name": "Test", "mood_checkins": {"weekly": None}})
-    assert resp.json()["mood_checkins"] == {**DEFAULT_SETTINGS, "daily": False, "remind": "off"}
+    assert resp.json()["mood_checkins"] == {**DEFAULT_SETTINGS, "daily": False}
     resp = client.post("/save-profile", json={"name": "Test", "mood_checkins": None})
     assert resp.json()["mood_checkins"] == DEFAULT_SETTINGS
 
 
-def test_saving_mood_settings_rejects_unknown_reminders(client):
-    resp = client.post("/save-profile", json={"name": "Test", "mood_checkins": {"remind": "hourly"}})
-    assert resp.status_code == 422
+def test_retired_mood_settings_are_accepted_and_ignored(client, db):
+    # Older rows and clients still carry remind and show_in_reports.
+    db.add(Profile(user_id=USER_ID, name="Test", mood_checkins={"remind": "off", "show_in_reports": False}))
+    db.flush()
+    assert client.get("/get-profile").json()["mood_checkins"] == DEFAULT_SETTINGS
+
+    resp = client.post("/save-profile", json={
+        "name": "Test", "mood_checkins": {"weekly": True, "remind": "shutoff+30", "show_in_reports": False},
+    })
+    assert resp.status_code == 200
+    assert resp.json()["mood_checkins"] == {**DEFAULT_SETTINGS, "weekly": True}
+    assert db.query(Profile).filter(Profile.user_id == USER_ID).one().mood_checkins == {"weekly": True}
 
 
 # ── Account deletion and demo seed ───────────────────────────────────────────

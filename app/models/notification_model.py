@@ -7,7 +7,7 @@ class NotificationPreferences(Base):
     __tablename__ = "notification_preferences"
 
     user_id = Column(String(36), primary_key=True)
-    # Per-type on/off overrides, e.g. {"overdue": false}. A type left out is
+    # Per-type on/off overrides, e.g. {"final_warning": false}. A type left out is
     # on, so a new alert type needs no backfill of existing rows.
     types = Column(JSON, nullable=True)
     # Local "HH:MM" bounds, both set or both NULL. Alerts that fire inside
@@ -16,8 +16,8 @@ class NotificationPreferences(Base):
     quiet_hours_end = Column(String(5), nullable=True)
     # Minutes before a task's due time to remind; NULL means the built-in default.
     default_reminder_minutes = Column(Integer, nullable=True)
-    # Minutes before "Call it a day" to remind about the mood check-in, 30 or
-    # 60; NULL means the built-in default.
+    # Minutes before "Call it a day" to remind about the mood check-in; NULL
+    # means the built-in default.
     mood_reminder_minutes = Column(Integer, nullable=True)
 
 
