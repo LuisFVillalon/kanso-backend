@@ -39,8 +39,9 @@ def _check_id(value: str) -> str:
 NotificationId = Annotated[str, Field(max_length=100), AfterValidator(_check_id)]
 # Local wall-clock time, as the profile stores day_start_time and shutoff_time.
 HourMinute = Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
-# How long before "Call it a day" the mood check-in reminder fires.
-MoodReminderMinutes = Annotated[int, Field(ge=1, le=REMINDER_MINUTES_MAX)]
+# How long before "Call it a day" the mood check-in reminder fires; under a
+# day, since the reminder is for that day.
+MoodReminderMinutes = Annotated[int, Field(ge=1, le=24 * 60 - 1)]
 
 
 class Notification(BaseModel):

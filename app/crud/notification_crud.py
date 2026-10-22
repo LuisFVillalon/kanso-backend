@@ -9,7 +9,8 @@ fired by now in the caller's time zone. The alerts are:
   its due time, until the final warning takes over.
 - final_warning: 30 minutes before a task's due time, until it is due.
 - mood_reminder: mood_reminder_minutes (default 60) before "Call it a day",
-  while the day's mood check-in isn't logged. Not on rest days.
+  but not before the day start, while the day's mood check-in isn't logged.
+  Not on rest days.
 - mood_missed: at the day start, listing the past week's days with no mood
   check-in, counted from the user's first one. Not on rest days.
 
@@ -287,7 +288,7 @@ def _mood_alerts(
             shutoff_at = _shutoff_at(day, shutoff, day_start, tz)
             alerts.append(_Alert(
                 "mood_reminder", "mood", day.isoformat(),
-                fire_at=shutoff_at - timedelta(minutes=lead),
+                fire_at=max(shutoff_at - timedelta(minutes=lead), _at(day, day_start, tz)),
                 expires_at=max(_at(day + timedelta(days=1), time.min, tz), shutoff_at),
                 render=lambda _, shutoff=shutoff: (
                     "How was your day?",

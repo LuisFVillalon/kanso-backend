@@ -156,6 +156,15 @@ def test_mood_reminder_lead_is_any_number_of_minutes(db, lead, fires_at):
     assert _by_id(db, fire_at)["mood_reminder:mood:2026-10-20"].fire_at == fire_at
 
 
+def test_mood_reminder_lead_past_the_day_start_fires_at_the_day_start(db):
+    _profile(db, day_start_time="08:00", shutoff_time="22:00")
+    update_preferences(db, USER_ID, {"mood_reminder_minutes": 24 * 60 - 1})
+    assert _ids(db, _utc(DAY, 7, 59)) == []
+    reminder = _by_id(db, _utc(DAY, 8, 0))["mood_reminder:mood:2026-10-20"]
+    assert reminder.fire_at == _utc(DAY, 8, 0)
+    assert reminder.dates == [DAY]
+
+
 def test_mood_reminder_skips_logged_days_rest_days_and_disabled_settings(db):
     _profile(db, rest_days=[3])  # Wednesday
     assert _ids(db, _utc(DAY + timedelta(days=1), 21, 0)) == []
@@ -345,7 +354,8 @@ def test_preference_updates_validate_and_reset(client):
     assert patch({"types": {"mood_checkin": False}}).status_code == 422
     assert patch({"default_reminder_minutes": 0}).status_code == 422
     assert patch({"mood_reminder_minutes": 0}).status_code == 422
-    assert patch({"mood_reminder_minutes": 7 * 24 * 60 + 1}).status_code == 422
+    assert patch({"mood_reminder_minutes": 24 * 60}).status_code == 422
+    assert patch({"mood_reminder_minutes": 24 * 60 - 1}).status_code == 200
 
     resp = patch({
         "quiet_hours_start": "22:00", "quiet_hours_end": "07:00", "default_reminder_minutes": 45,
