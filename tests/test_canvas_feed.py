@@ -547,7 +547,7 @@ def test_token_only_routes_are_not_supported_for_a_feed(feed_connected, feed, ca
 
 def _add(client, item: dict, **fields):
     body = {"title": item["title"], "canvas_assignment_id": item["id"], "canvas_html_url": item["html_url"],
-            "canvas_due_at": item["due_at"], **fields}
+            "canvas_due_at": item["due_at"], "canvas_due_date": item["day"], **fields}
     return client.post("/create-task", json=body)
 
 
@@ -570,6 +570,8 @@ def test_feed_assignments_can_be_added_to_tasks_once(feed_connected):
     task = response.json()
     assert task["canvas_assignment_id"] == 101
     assert task["canvas_html_url"] == assignment["html_url"]
+    # A timed item has no date to store.
+    assert task["canvas_due_date"] is None
 
     again = _add(feed_connected, assignment)
     assert again.status_code == 409
@@ -650,50 +652,85 @@ def test_all_day_items_keep_one_due_at_whatever_the_callers_zone(feed_connected,
         assert _task(db, task["id"]).due_date.date().isoformat() == edited
 
 
+def _sync_unchanged(client, db, task_id: int, edited: str, zones=("America/New_York", "Asia/Tokyo")):
+    for tz in zones:
+        response = client.post("/canvas/linked-tasks/sync", params={"tz": tz})
+        assert response.status_code == 200, response.text
+        result = response.json()["results"][0]
+        assert result["task_id"] == task_id
+        assert result["synced"] is True and result["due_changed"] is False
+        assert _task(db, task_id).due_date.date().isoformat() == edited
+
+
 def test_an_edited_all_day_task_survives_a_reconnect_from_another_zone(feed_connected, db):
     speech = next(i for i in _overview(feed_connected)["upcoming"] if i["uid"] == "event-assignment-102")
     edited = (ALL_DAY - timedelta(days=1)).isoformat()
     task = _add(feed_connected, speech, due_date=edited).json()
+    assert task["canvas_due_date"] == ALL_DAY.isoformat()
 
     response = feed_connected.put(
         "/canvas/connection/feed", params={"tz": "America/New_York"}, json={"feed_url": FEED_URL}
     )
     assert response.status_code == 200, response.text
     assert response.json()["time_zone"] == "America/Los_Angeles"
-
-    for tz in ("America/New_York", "Asia/Tokyo"):
-        response = feed_connected.post("/canvas/linked-tasks/sync", params={"tz": tz})
-        assert response.status_code == 200, response.text
-        result = response.json()["results"][0]
-        assert result["task_id"] == task["id"]
-        assert result["synced"] is True and result["due_changed"] is False
-        assert _task(db, task["id"]).due_date.date().isoformat() == edited
+    _sync_unchanged(feed_connected, db, task["id"], edited)
 
 
-def test_an_all_day_due_date_stored_in_another_zone_is_unchanged(feed_connected, db):
+def test_an_edited_all_day_task_survives_disconnecting_and_switching_to_a_token(feed_connected, db):
+    speech = next(i for i in _overview(feed_connected)["upcoming"] if i["uid"] == "event-assignment-102")
+    edited = (ALL_DAY - timedelta(days=1)).isoformat()
+    task = _add(feed_connected, speech, due_date=edited).json()
+
+    # Disconnect, then connect the feed again from New York: the zone starts over.
+    assert feed_connected.delete("/canvas/connection").status_code == 204
+    response = feed_connected.put(
+        "/canvas/connection/feed", params={"tz": "America/New_York"}, json={"feed_url": FEED_URL}
+    )
+    assert response.json()["time_zone"] == "America/New_York"
+    _sync_unchanged(feed_connected, db, task["id"], edited)
+
+    # Switch to a token and back to the feed from Tokyo.
+    response = feed_connected.put("/canvas/connection", json={"base_url": BASE_URL, "token": TOKEN})
+    assert response.status_code == 200, response.text
+    response = feed_connected.put(
+        "/canvas/connection/feed", params={"tz": "Asia/Tokyo"}, json={"feed_url": FEED_URL}
+    )
+    assert response.json()["time_zone"] == "Asia/Tokyo"
+    _sync_unchanged(feed_connected, db, task["id"], edited, zones=("America/Los_Angeles", "Pacific/Auckland"))
+    assert _task(db, task["id"]).canvas_due_date == ALL_DAY
+
+
+def test_without_a_stored_date_the_first_sync_compares_the_instant_then_stores_the_date(feed_connected, db):
     # E.g. linked under a token, whose 11:59 pm Canvas gave in the school's zone.
     canvas_due = datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=ZoneInfo("Asia/Tokyo"))
     edited = (ALL_DAY - timedelta(days=1)).isoformat()
     task = feed_connected.post("/create-task", json={
         "title": "Speech", "canvas_assignment_id": 102, "canvas_due_at": canvas_due.isoformat(), "due_date": edited,
     }).json()
+    assert task["canvas_due_date"] is None
     result = _sync(feed_connected)["results"][0]
     assert result["synced"] is True and result["due_changed"] is False
     assert _task(db, task["id"]).due_date.date().isoformat() == edited
+    assert _task(db, task["id"]).canvas_due_date == ALL_DAY
 
 
+@pytest.mark.parametrize("send_date", [True, False])
 @pytest.mark.parametrize("days", [1, -1, 3])
-def test_an_all_day_item_moved_to_another_day_moves_the_task(feed_connected, db, days):
+def test_an_all_day_item_moved_to_another_day_moves_the_task(feed_connected, db, days, send_date):
     # The task last stored the assignment due `days` before its date in the feed.
-    stale = datetime.combine(ALL_DAY - timedelta(days=days), time(23, 59, 59), tzinfo=LA)
-    task = feed_connected.post("/create-task", json={
-        "title": "Speech", "canvas_assignment_id": 102, "canvas_due_at": stale.isoformat(),
-        "due_date": stale.date().isoformat(),
-    }).json()
+    stale_day = ALL_DAY - timedelta(days=days)
+    stale = datetime.combine(stale_day, time(23, 59, 59), tzinfo=LA)
+    body = {"title": "Speech", "canvas_assignment_id": 102, "canvas_due_at": stale.isoformat(),
+            "due_date": stale_day.isoformat()}
+    if send_date:
+        body["canvas_due_date"] = stale_day.isoformat()
+    task = feed_connected.post("/create-task", json=body).json()
     result = _sync(feed_connected)["results"][0]
     assert result["synced"] is True and result["due_changed"] is True
-    assert _task(db, task["id"]).due_date.date() == ALL_DAY
-    assert _task(db, task["id"]).canvas_due_at == datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
+    saved = _task(db, task["id"])
+    assert saved.due_date.date() == ALL_DAY
+    assert saved.canvas_due_at == datetime.combine(ALL_DAY, time(23, 59, 59), tzinfo=LA)
+    assert saved.canvas_due_date == ALL_DAY
 
 
 def test_sync_leaves_tasks_linked_at_another_school_alone(feed_connected, db):

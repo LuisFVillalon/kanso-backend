@@ -38,6 +38,9 @@ class TaskBase(BaseModel):
     # follows (its assignment id, not a classic quiz's quiz_id) and its page.
     canvas_assignment_id: int | None = None
     canvas_html_url: str | None = None
+    # An all-day calendar feed item's date (its `day`) when the task is linked,
+    # which the feed sync compares like canvas_due_at.
+    canvas_due_date: date | None = None
 
     tags: list[TagCreate] = []
 

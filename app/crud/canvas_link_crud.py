@@ -26,7 +26,7 @@ overview's cache) and matches each open task that follows an assignment by
 its feed UID, event-assignment-<canvas_assignment_id>. Only due dates sync:
 a feed has no submissions, so submitted is always false. All-day items are
 due in the connection's time_zone, whatever the caller's, and are compared
-with a task's stored due date by its date in that zone. A
+by date with the task's canvas_due_date, with no zone involved. A
 task whose item isn't in the feed, or whose link is on another school's
 host, comes back with synced=false and is left alone.
 """
@@ -79,21 +79,30 @@ def _unsynced(task_id: int) -> CanvasLinkedTaskSync:
     return CanvasLinkedTaskSync(task_id=task_id, synced=False)
 
 
-def _due_moved(assignment: CanvasItem, canvas_due_at: datetime | None) -> bool:
+def _due_moved(task: TaskModel, assignment: CanvasItem) -> bool:
     """Whether Canvas's due date differs from the one the task last stored.
 
-    An all-day feed item is a date: it moved when the stored instant falls on
-    another date in the connection's zone, the one feed_items set its due_at in.
+    An all-day feed item is a date: it moved exactly when it isn't the stored
+    canvas_due_date. Without one (a task linked without it), the stored
+    instant's date in the zone feed_items set the item's due_at in is used.
     """
-    if isinstance(assignment, CanvasFeedItem) and assignment.day is not None and canvas_due_at is not None:
-        return canvas_due_at.astimezone(assignment.due_at.tzinfo).date() != assignment.day
-    return assignment.due_at != canvas_due_at
+    if isinstance(assignment, CanvasFeedItem) and assignment.day is not None:
+        if task.canvas_due_date is not None:
+            return task.canvas_due_date != assignment.day
+        if task.canvas_due_at is not None:
+            return task.canvas_due_at.astimezone(assignment.due_at.tzinfo).date() != assignment.day
+    return assignment.due_at != task.canvas_due_at
 
 
 def _apply(task: TaskModel, assignment: CanvasItem, zone: ZoneInfo) -> CanvasLinkedTaskSync:
     """Move the task's due date to the assignment's if Canvas changed it since the last sync, and report its state."""
     changed = False
-    if _due_moved(assignment, task.canvas_due_at):
+    moved = _due_moved(task, assignment)
+    if isinstance(assignment, CanvasFeedItem):
+        task.canvas_due_date = assignment.day
+    elif moved:
+        task.canvas_due_date = None
+    if moved:
         if assignment.due_at is None:
             due_date, due_time = None, None
         else:
