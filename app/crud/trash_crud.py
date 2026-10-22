@@ -77,14 +77,14 @@ def get_trash(db: Session, user_id: str) -> list[TrashItem]:
     return sorted(items, key=lambda item: item.deleted_at, reverse=True)
 
 
-def get_trashed(db: Session, model, record_id: int, user_id: str):
+def get_trashed[ModelT](db: Session, model: type[ModelT], record_id: int, user_id: str) -> ModelT | None:
     """Purge expired rows, then fetch one row still in the trash. Returns None if not there."""
     purge_expired(db)
     db.commit()
     return get_owned(db, model, record_id, user_id, trashed=True)
 
 
-def move_to_trash(db: Session, model, record_id: int, user_id: str):
+def move_to_trash[ModelT](db: Session, model: type[ModelT], record_id: int, user_id: str) -> ModelT | None:
     """Move a note, tag or habit to the trash, its links kept for a restore. Returns None if not found."""
     row = get_owned(db, model, record_id, user_id)
     if not row:
@@ -96,7 +96,7 @@ def move_to_trash(db: Session, model, record_id: int, user_id: str):
     return row
 
 
-def restore_from_trash(db: Session, model, record_id: int, user_id: str):
+def restore_from_trash[ModelT](db: Session, model: type[ModelT], record_id: int, user_id: str) -> ModelT | None:
     """Bring a note, tag or habit back from the trash, links intact. Returns None if not in the trash.
 
     It comes back as it was, so an item deleted while archived is restored
@@ -111,7 +111,7 @@ def restore_from_trash(db: Session, model, record_id: int, user_id: str):
     return row
 
 
-def purge_from_trash(db: Session, model, record_id: int, user_id: str):
+def purge_from_trash[ModelT](db: Session, model: type[ModelT], record_id: int, user_id: str) -> ModelT | None:
     """Permanently delete a note, tag or habit that is in the trash. Returns None if not in the trash."""
     row = get_trashed(db, model, record_id, user_id)
     if not row:

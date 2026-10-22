@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.crud.base import get_owned
+from app.crud.base import active_filter, deleted_filter, get_owned
 from app.models.note_model import Note as NoteModel
 from app.models.note_session_model import NoteSession as NoteSessionModel
 
@@ -54,7 +54,7 @@ def get_total_time_seconds(db: Session, note_id: int, user_id: str) -> int:
             NoteSessionModel.note_id == note_id,
             NoteSessionModel.user_id == user_id,
             NoteSessionModel.ended_at.isnot(None),
-            NoteModel.deleted_at.is_(None),
+            deleted_filter(NoteModel, False),
         )
         .scalar()
     )
@@ -75,8 +75,7 @@ def _closed_seconds_by_active_note(db: Session, user_id: str, *conditions) -> li
         .filter(
             NoteSessionModel.user_id == user_id,
             NoteSessionModel.ended_at.isnot(None),
-            NoteModel.archived_at.is_(None),
-            NoteModel.deleted_at.is_(None),
+            active_filter(NoteModel),
             *conditions,
         )
         .group_by(NoteSessionModel.note_id)

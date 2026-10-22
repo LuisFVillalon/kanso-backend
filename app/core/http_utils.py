@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException, status
 
 
-def require_found(obj, detail: str = "Not found"):
+def require_found[T](obj: T | None, detail: str = "Not found") -> T:
     """Raise 404 if obj is None, otherwise return it."""
     if obj is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
@@ -17,7 +17,7 @@ def require_time_zone(tz: str) -> ZoneInfo:
         return ZoneInfo(tz)
     except (ZoneInfoNotFoundError, ValueError):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Unknown time zone: {tz!r}."
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Unknown time zone: {tz!r}."
         ) from None
 
 

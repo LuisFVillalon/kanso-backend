@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.crud.base import archived_filter, deleted_filter, get_owned, list_owned, set_archived
+from app.crud.base import active_filter, get_owned, list_owned, set_archived
 from app.crud.tag_crud import set_item_tags
 from app.crud.trash_crud import move_to_trash, purge_from_trash, restore_from_trash
 from app.models.habit_log_model import HabitLog
@@ -33,7 +33,7 @@ def resolve_today(local_date: str | date | None) -> date:
 
 # ── Pure streak helpers (accept pre-fetched date collections) ────────────────
 
-def _streak_ending_on(log_dates: set, end_date: date) -> int:
+def _streak_ending_on(log_dates: set[date], end_date: date) -> int:
     """Count consecutive logged days ending on end_date (inclusive)."""
     streak = 0
     current = end_date
@@ -43,7 +43,7 @@ def _streak_ending_on(log_dates: set, end_date: date) -> int:
     return streak
 
 
-def _max_streak_from_dates(log_dates: set) -> int:
+def _max_streak_from_dates(log_dates: set[date]) -> int:
     """Find the all-time longest consecutive run in log_dates."""
     if not log_dates:
         return 0
@@ -107,7 +107,7 @@ def _is_logged_today(db: Session, habit_id: int, today: date) -> bool:
 
 # ── Public CRUD ──────────────────────────────────────────────────────────────
 
-def get_habits(db: Session, user_id: str, local_date: str | None = None, archived: bool = False):
+def get_habits(db: Session, user_id: str, local_date: str | None = None, archived: bool = False) -> list[Habit]:
     """Return the user's active habits, or only their archived ones when archived=True. Deleted habits are left out."""
     habits = list_owned(db, Habit, user_id, archived)
     if not habits:
@@ -127,7 +127,7 @@ def get_habits(db: Session, user_id: str, local_date: str | None = None, archive
     return habits
 
 
-def create_habit(db: Session, habit: HabitCreate, user_id: str):
+def create_habit(db: Session, habit: HabitCreate, user_id: str) -> Habit:
     db_habit = Habit(title=habit.title, user_id=user_id, estimated_time=habit.estimated_time)
     set_item_tags(db, db_habit, habit.tags, user_id)
     db.add(db_habit)
@@ -136,7 +136,9 @@ def create_habit(db: Session, habit: HabitCreate, user_id: str):
     return _stamp(db_habit, False)
 
 
-def update_habit(db: Session, habit_id: int, habit: HabitCreate, user_id: str, local_date: str | None = None):
+def update_habit(
+    db: Session, habit_id: int, habit: HabitCreate, user_id: str, local_date: str | None = None
+) -> Habit | None:
     db_habit = get_owned(db, Habit, habit_id, user_id)
     if not db_habit:
         return None
@@ -150,7 +152,7 @@ def update_habit(db: Session, habit_id: int, habit: HabitCreate, user_id: str, l
     return _stamp(db_habit, _is_logged_today(db, habit_id, resolve_today(local_date)))
 
 
-def delete_habit(db: Session, habit_id: int, user_id: str):
+def delete_habit(db: Session, habit_id: int, user_id: str) -> Habit | None:
     """Move a habit to the trash, keeping its logs. Returns None if not found."""
     db_habit = move_to_trash(db, Habit, habit_id, user_id)
     return _stamp(db_habit, False) if db_habit else None
@@ -162,27 +164,27 @@ def _stamped(db: Session, habit: Habit | None, local_date: str | None) -> Habit 
     return _stamp(habit, _is_logged_today(db, habit.id, resolve_today(local_date)))
 
 
-def archive_habit(db: Session, habit_id: int, user_id: str, local_date: str | None = None):
+def archive_habit(db: Session, habit_id: int, user_id: str, local_date: str | None = None) -> Habit | None:
     """Archive a habit. Returns None if not found."""
     return _stamped(db, set_archived(db, Habit, habit_id, user_id, archived=True), local_date)
 
 
-def unarchive_habit(db: Session, habit_id: int, user_id: str, local_date: str | None = None):
+def unarchive_habit(db: Session, habit_id: int, user_id: str, local_date: str | None = None) -> Habit | None:
     """Restore an archived habit. Returns None if not found."""
     return _stamped(db, set_archived(db, Habit, habit_id, user_id, archived=False), local_date)
 
 
-def restore_habit(db: Session, habit_id: int, user_id: str, local_date: str | None = None):
+def restore_habit(db: Session, habit_id: int, user_id: str, local_date: str | None = None) -> Habit | None:
     """Restore a habit from the trash, with its logs. Returns None if not in the trash."""
     return _stamped(db, restore_from_trash(db, Habit, habit_id, user_id), local_date)
 
 
-def purge_habit(db: Session, habit_id: int, user_id: str):
+def purge_habit(db: Session, habit_id: int, user_id: str) -> Habit | None:
     """Permanently delete a habit in the trash, with its logs. Returns None if not in the trash."""
     return purge_from_trash(db, Habit, habit_id, user_id)
 
 
-def toggle_habit_log(db: Session, habit_id: int, user_id: str, local_date: str | None = None):
+def toggle_habit_log(db: Session, habit_id: int, user_id: str, local_date: str | None = None) -> Habit | None:
     """Toggle today's completion log. Updates current_streak and max_streak."""
     habit = get_owned(db, Habit, habit_id, user_id)
     if not habit:
@@ -194,7 +196,9 @@ def toggle_habit_log(db: Session, habit_id: int, user_id: str, local_date: str |
     return _stamp(habit, is_logged_today)
 
 
-def toggle_habit_log_date(db: Session, habit_id: int, user_id: str, target_date: date, local_date: str | None = None):
+def toggle_habit_log_date(
+    db: Session, habit_id: int, user_id: str, target_date: date, local_date: str | None = None
+) -> Habit | None:
     """Toggle completion for a specific date, then recalculate streaks from scratch."""
     habit = get_owned(db, Habit, habit_id, user_id)
     if not habit:
@@ -205,7 +209,9 @@ def toggle_habit_log_date(db: Session, habit_id: int, user_id: str, target_date:
     return _stamp(habit, today_logged)
 
 
-def get_habit_history(db: Session, habit_id: int, user_id: str, days: int = 30, local_date: str | None = None):
+def get_habit_history(
+    db: Session, habit_id: int, user_id: str, days: int = 30, local_date: str | None = None
+) -> list[dict] | None:
     """Return a list of {date, logged} entries for the past `days` days (including today)."""
     habit = get_owned(db, Habit, habit_id, user_id)
     if not habit:
@@ -231,7 +237,7 @@ def get_habit_history(db: Session, habit_id: int, user_id: str, days: int = 30, 
     ]
 
 
-def verify_and_reset_streaks(db: Session, user_id: str, local_date: str | None = None):
+def verify_and_reset_streaks(db: Session, user_id: str, local_date: str | None = None) -> dict[str, int]:
     """Reset current_streak to 0 for active habits whose last log entry is older than yesterday.
 
     Archived and deleted habits are skipped; a restored one is checked again
@@ -242,8 +248,7 @@ def verify_and_reset_streaks(db: Session, user_id: str, local_date: str | None =
         .filter(
             Habit.user_id == user_id,
             Habit.current_streak > 0,
-            deleted_filter(Habit, False),
-            archived_filter(Habit, False),
+            active_filter(Habit),
         )
         .all()
     )

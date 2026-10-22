@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
+from app.crud.base import archived_filter, deleted_filter
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
 from app.models.note_model import Note as NoteModel
@@ -41,10 +42,10 @@ def get_calendar_activity(
     visible_tasks = (
         db.query(TaskModel)
         .options(selectinload(TaskModel.tags), selectinload(TaskModel.parent_task))
-        .filter(TaskModel.user_id == user_id, TaskModel.deleted_at.is_(None))
+        .filter(TaskModel.user_id == user_id, deleted_filter(TaskModel, False))
     )
     if not include_archived:
-        visible_tasks = visible_tasks.filter(TaskModel.archived_at.is_(None))
+        visible_tasks = visible_tasks.filter(archived_filter(TaskModel, False))
     scheduled_tasks = (
         visible_tasks.filter(
             TaskModel.due_date >= datetime.combine(start, time.min),
@@ -68,7 +69,7 @@ def get_calendar_activity(
         .join(NoteModel, NoteModel.id == NoteSessionModel.note_id)
         .filter(
             NoteSessionModel.user_id == user_id,
-            NoteModel.deleted_at.is_(None),
+            deleted_filter(NoteModel, False),
             # Overlaps the range. Zero-length sessions (reaped orphans, see
             # note_session_crud.reap_stale_sessions) are left out.
             NoteSessionModel.ended_at > range_start_utc,
@@ -77,7 +78,7 @@ def get_calendar_activity(
         )
     )
     if not include_archived:
-        session_query = session_query.filter(NoteModel.archived_at.is_(None))
+        session_query = session_query.filter(archived_filter(NoteModel, False))
     session_rows = session_query.order_by(NoteSessionModel.started_at, NoteSessionModel.id).all()
 
     habit_query = (
@@ -85,13 +86,13 @@ def get_calendar_activity(
         .join(Habit, Habit.id == HabitLog.habit_id)
         .filter(
             Habit.user_id == user_id,
-            Habit.deleted_at.is_(None),
+            deleted_filter(Habit, False),
             HabitLog.logged_date >= start,
             HabitLog.logged_date <= end,
         )
     )
     if not include_archived:
-        habit_query = habit_query.filter(Habit.archived_at.is_(None))
+        habit_query = habit_query.filter(archived_filter(Habit, False))
     habit_rows = habit_query.order_by(HabitLog.logged_date, func.lower(Habit.title), Habit.id).all()
 
     return CalendarActivity(

@@ -3,10 +3,12 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.crud.base import active_filter
 from app.crud.habit_crud import get_habits, resolve_today
 from app.crud.note_session_crud import get_time_by_note_for_date, get_time_by_note_for_datetime_range
-from app.crud.profile_crud import get_profile
+from app.crud.profile_crud import get_profile, is_rest_day
 from app.models.note_model import Note as NoteModel
+from app.models.profile_model import Profile
 from app.models.task_model import Task as TaskModel
 from app.schemas.debrief_schema import (
     DailyDebriefReport,
@@ -35,7 +37,7 @@ def _minutes_between(start_str: str, end_str: str) -> float:
     return float(end_total - start_total)
 
 
-def _priority_sort_key(task: TaskModel):
+def _priority_sort_key(task: TaskModel) -> tuple[bool, int]:
     return (task.priority is None, task.priority or 0)
 
 
@@ -83,13 +85,12 @@ def _local_day_bounds_utc(today: date, now_time: time | None) -> tuple[datetime,
     return day_start_utc, day_start_utc + timedelta(days=1)
 
 
-def _build_workload(profile, due_today: list[TaskModel], today: date) -> WorkloadCapacity:
-    is_rest_day = False
+def _build_workload(profile: Profile | None, due_today: list[TaskModel], today: date) -> WorkloadCapacity:
+    rest_day = False
     available_minutes = None
 
     if profile:
-        weekday = today.isoweekday() % 7  # 0=Sun..6=Sat, matches Profile.rest_days
-        is_rest_day = bool(profile.rest_days) and weekday in profile.rest_days
+        rest_day = is_rest_day(today, profile.rest_days)
         if profile.day_start_time and profile.shutoff_time:
             available_minutes = _minutes_between(profile.day_start_time, profile.shutoff_time)
 
@@ -103,7 +104,7 @@ def _build_workload(profile, due_today: list[TaskModel], today: date) -> Workloa
         is_overcommitted = committed_minutes > available_minutes
 
     return WorkloadCapacity(
-        is_rest_day=is_rest_day,
+        is_rest_day=rest_day,
         available_minutes=available_minutes,
         committed_minutes=committed_minutes,
         utilization_pct=utilization_pct,
@@ -191,8 +192,7 @@ def build_daily_debrief(
         .filter(
             TaskModel.user_id == user_id,
             TaskModel.completed == False,  # noqa: E712
-            TaskModel.archived_at.is_(None),
-            TaskModel.deleted_at.is_(None),
+            active_filter(TaskModel),
         )
         .all()
     )
@@ -216,8 +216,7 @@ def build_daily_debrief(
     completed_today_query = db.query(TaskModel).filter(
         TaskModel.user_id == user_id,
         TaskModel.completed == True,  # noqa: E712
-        TaskModel.archived_at.is_(None),
-        TaskModel.deleted_at.is_(None),
+        active_filter(TaskModel),
     )
     day_bounds = _local_day_bounds_utc(today, now_time)
     if day_bounds:

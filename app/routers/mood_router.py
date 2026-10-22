@@ -22,7 +22,7 @@ def _parse_kinds(kinds: str | None) -> list[str]:
     unknown = [k for k in parsed if k not in MOOD_PERIOD_KINDS]
     if not parsed or unknown:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"kinds must be a comma-separated list of {', '.join(MOOD_PERIOD_KINDS)}.",
         )
     return parsed

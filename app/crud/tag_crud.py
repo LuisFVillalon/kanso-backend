@@ -3,7 +3,10 @@ from sqlalchemy.orm import Session
 
 from app.crud.base import get_owned, list_owned, set_archived, trash_cutoff
 from app.crud.trash_crud import move_to_trash, purge_from_trash, restore_from_trash
+from app.models.habit_model import Habit
+from app.models.note_model import Note
 from app.models.tag_model import Tag as TagModel
+from app.models.task_model import Task
 from app.schemas.tag_schema import TagCreate
 
 
@@ -24,7 +27,7 @@ def _tag_named(db: Session, name: str, user_id: str, exclude_id: int | None = No
     return tag
 
 
-def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
+def get_or_create_tag(db: Session, tag_data: TagCreate, user_id: str) -> TagModel:
     """Return an existing tag matching name+user, or add a new one to the session.
 
     The caller is responsible for committing the session.  The tag is only
@@ -38,7 +41,7 @@ def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
     return tag
 
 
-def set_item_tags(db: Session, item, tags_data, user_id: str) -> None:
+def set_item_tags(db: Session, item: Task | Note | Habit, tags_data: list[TagCreate], user_id: str) -> None:
     """Replace a task's, note's or habit's tags by name.
 
     An archived tag the item didn't already carry is restored, since newly
@@ -76,12 +79,12 @@ def _ensure_name_available(db: Session, name: str, user_id: str, exclude_id: int
         )
 
 
-def get_tags(db: Session, user_id: str, archived: bool = False):
+def get_tags(db: Session, user_id: str, archived: bool = False) -> list[TagModel]:
     """Return the user's active tags, or only their archived ones when archived=True. Deleted tags are left out."""
     return list_owned(db, TagModel, user_id, archived)
 
 
-def create_tag(db: Session, tag: TagCreate, user_id: str):
+def create_tag(db: Session, tag: TagCreate, user_id: str) -> TagModel:
     """Create and persist a new tag, returning the saved record."""
     _ensure_name_available(db, tag.name, user_id)
     db_tag = TagModel(name=tag.name, color=tag.color, user_id=user_id)
@@ -91,12 +94,12 @@ def create_tag(db: Session, tag: TagCreate, user_id: str):
     return db_tag
 
 
-def delete_tag(db: Session, tag_id: int, user_id: str):
+def delete_tag(db: Session, tag_id: int, user_id: str) -> TagModel | None:
     """Move a tag to the trash. Its links are kept but hidden. Returns None if not found."""
     return move_to_trash(db, TagModel, tag_id, user_id)
 
 
-def update_tag(db: Session, tag_id: int, tag: TagCreate, user_id: str):
+def update_tag(db: Session, tag_id: int, tag: TagCreate, user_id: str) -> TagModel | None:
     """Update a tag's name and color. Returns None if not found."""
     db_tag = get_owned(db, TagModel, tag_id, user_id)
     if not db_tag:
@@ -109,21 +112,21 @@ def update_tag(db: Session, tag_id: int, tag: TagCreate, user_id: str):
     return db_tag
 
 
-def archive_tag(db: Session, tag_id: int, user_id: str):
+def archive_tag(db: Session, tag_id: int, user_id: str) -> TagModel | None:
     """Archive a tag. Its task/note/habit links are kept. Returns None if not found."""
     return set_archived(db, TagModel, tag_id, user_id, archived=True)
 
 
-def unarchive_tag(db: Session, tag_id: int, user_id: str):
+def unarchive_tag(db: Session, tag_id: int, user_id: str) -> TagModel | None:
     """Restore an archived tag. Returns None if not found."""
     return set_archived(db, TagModel, tag_id, user_id, archived=False)
 
 
-def restore_tag(db: Session, tag_id: int, user_id: str):
+def restore_tag(db: Session, tag_id: int, user_id: str) -> TagModel | None:
     """Restore a tag from the trash, back on every item it was on. Returns None if not in the trash."""
     return restore_from_trash(db, TagModel, tag_id, user_id)
 
 
-def purge_tag(db: Session, tag_id: int, user_id: str):
+def purge_tag(db: Session, tag_id: int, user_id: str) -> TagModel | None:
     """Permanently delete a tag in the trash. Returns None if not in the trash."""
     return purge_from_trash(db, TagModel, tag_id, user_id)

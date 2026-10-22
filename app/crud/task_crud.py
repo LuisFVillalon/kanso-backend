@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, selectinload
 
-from app.crud.base import archived_filter, deleted_filter, get_owned
+from app.crud.base import active_filter, archived_filter, deleted_filter, get_owned
 from app.crud.canvas_crud import get_connection
 from app.crud.tag_crud import set_item_tags
 from app.crud.task_rules import drop_taken_canvas_link, validate_canvas_unique, validate_priority_unique
@@ -230,8 +230,7 @@ def set_linked_tasks(
         .filter(
             TaskModel.parent_task_id == parent.id,
             TaskModel.user_id == user_id,
-            deleted_filter(TaskModel, False),
-            archived_filter(TaskModel, False),
+            active_filter(TaskModel),
             TaskModel.id.notin_(kept),
         )
         .all()
