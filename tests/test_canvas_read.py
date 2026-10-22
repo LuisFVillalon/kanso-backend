@@ -15,10 +15,10 @@ from app.core.canvas_client import CanvasClient, CanvasForbidden, CanvasNotCanva
 from app.core.rate_limit import RateLimiter
 from app.crud import canvas_data_crud
 from app.crud.canvas_crud import delete_connection, get_connection
-from app.crud.canvas_data_crud import canvas_url, plain_text
+from app.crud.canvas_normalize import canvas_url, plain_text
 from app.database.database import get_db
 from app.main import app
-from app.routers import canvas_router
+from app.routers import canvas_connection_router
 from tests.conftest import USER_ID
 from tests.test_canvas import _over_the_network
 
@@ -166,7 +166,7 @@ def fresh_state(monkeypatch):
     monkeypatch.setenv(crypto.KEY_ENV, base64.b64encode(os.urandom(32)).decode())
     canvas_cache.clear()
     monkeypatch.setattr(canvas_data_crud, "_fetch_limiter", RateLimiter(max_calls=1000, period=60))
-    monkeypatch.setattr(canvas_router, "_canvas_call_limiter", RateLimiter(max_calls=1000, period=60))
+    monkeypatch.setattr(canvas_connection_router, "_canvas_call_limiter", RateLimiter(max_calls=1000, period=60))
     yield
     canvas_cache.clear()
 

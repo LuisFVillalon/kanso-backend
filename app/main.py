@@ -13,12 +13,14 @@ from app.crud.trash_crud import purge_expired
 from app.database.database import SessionLocal, check_db_connection
 from app.routers import (
     calendar_router,
-    canvas_router,
+    canvas_connection_router,
+    canvas_data_router,
     debrief_router,
     demo_router,
     drawing_router,
     habits_router,
     mood_router,
+    note_sessions_router,
     notes_router,
     notifications_router,
     profile_router,
@@ -95,6 +97,7 @@ app.add_middleware(
 app.include_router(tags_router.router)
 app.include_router(tasks_router.router)
 app.include_router(notes_router.router)
+app.include_router(note_sessions_router.router)
 app.include_router(user_router.router)
 app.include_router(calendar_router.router)
 app.include_router(habits_router.router)
@@ -105,7 +108,8 @@ app.include_router(demo_router.router)
 app.include_router(trash_router.router)
 app.include_router(notifications_router.router)
 app.include_router(mood_router.router)
-app.include_router(canvas_router.router)
+app.include_router(canvas_connection_router.router)
+app.include_router(canvas_data_router.router)
 
 
 @app.get("/", include_in_schema=False)

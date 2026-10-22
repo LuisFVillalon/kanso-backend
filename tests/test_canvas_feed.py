@@ -523,7 +523,7 @@ def test_canvas_down_serves_the_cached_feed_marked_stale(feed_connected, feed, m
     first = _overview(feed_connected)
     feed.respond = lambda request: httpx.Response(503, text="Service Unavailable")
     later = datetime.now(UTC) + timedelta(minutes=20)
-    monkeypatch.setattr("app.routers.canvas_router.datetime", type("D", (datetime,), {"now": staticmethod(
+    monkeypatch.setattr("app.routers.canvas_data_router.datetime", type("D", (datetime,), {"now": staticmethod(
         lambda tz=None: later)}))
     body = _overview(feed_connected)
     assert body["stale"] is True
