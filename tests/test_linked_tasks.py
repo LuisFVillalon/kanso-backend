@@ -152,6 +152,27 @@ def test_new_tasks_take_every_field_create_task_does(client):
     assert bare["tags"] == []
 
 
+def test_fields_next_to_an_existing_tasks_id_are_ignored(client):
+    parent = _create(client, title="Essay", tags=[SCHOOL])
+    other = _create(client, title="Other")
+    existing = _create(client, title="Outline", priority=5, due_date="2026-11-01")
+    echoed = {
+        "id": existing["id"],
+        "title": "Renamed",
+        "due_date": "2026-12-25",
+        "priority": -1,
+        "parent_task_id": other["id"],
+        "tags": [{"name": "Writing", "color": "#22c55e"}],
+        "position": 9,
+    }
+
+    [linked] = _linked(client, parent["id"], [echoed])["children"]
+
+    for task in (linked, _tasks(client)[existing["id"]]):
+        assert (task["title"], task["priority"], task["due_date"]) == ("Outline", 5, "2026-11-01")
+        assert (task["parent_task_id"], task["position"], task["tags"]) == (parent["id"], 0, [])
+
+
 def test_a_new_task_can_start_completed(client):
     parent = _create(client)
 
@@ -236,9 +257,7 @@ def test_a_task_cannot_be_listed_twice_or_linked_to_itself(client):
     [
         [{}],
         [{"title": "   "}],
-        [{"id": 1, "title": "Both"}],
         [{"title": "x" * 501}],
-        [{"id": 1, "due_date": "2026-11-01"}],
         [{"title": "Step", "reminder_minutes": 0}],
         [{"title": "Step", "priority": -1}],
         [{"title": "Step", "canvas_html_url": "javascript:alert(1)"}],

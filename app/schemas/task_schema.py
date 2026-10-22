@@ -138,11 +138,19 @@ class LinkedTaskRef(TaskCreate):
 
     A new task takes the same fields, limits and checks as POST /create-task,
     so it can be created fully specified; only its title is required. Leaving
-    out tags gives it the parent's tags.
+    out tags gives it the parent's tags. An existing task is only linked and
+    ordered, never edited, so every field next to its id is ignored.
     """
 
     id: int | None = None
     title: str | None = Field(None, max_length=TITLE_MAX)
+
+    @model_validator(mode="before")
+    @classmethod
+    def id_alone(cls, data):
+        if isinstance(data, dict) and data.get("id") is not None:
+            return {"id": data["id"]}
+        return data
 
     @field_validator("title")
     @classmethod
@@ -151,10 +159,8 @@ class LinkedTaskRef(TaskCreate):
 
     @model_validator(mode="after")
     def id_or_title(self):
-        if (self.id is None) == (not self.title):
+        if self.id is None and not self.title:
             raise ValueError("Give either the id of an existing task or the title of a new one")
-        if self.id is not None and self.model_fields_set != {"id"}:
-            raise ValueError("An existing task is listed by its id alone")
         return self
 
 
