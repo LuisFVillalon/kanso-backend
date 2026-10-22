@@ -122,6 +122,86 @@ def test_new_tasks_skip_the_parents_deleted_tags(client):
     assert [t["name"] for t in new["tags"]] == ["School"]
 
 
+def test_new_tasks_take_every_field_create_task_does(client):
+    parent = _create(client, title="Essay", tags=[SCHOOL])
+    fields = {
+        "description": "Two pages, double spaced",
+        "category": "Essay",
+        "priority": 7,
+        "due_date": "2026-11-03",
+        "due_time": "17:30:00",
+        "estimated_time": 1.5,
+        "reminder_minutes": 45,
+        "canvas_assignment_id": 424242,
+        "canvas_html_url": "https://canvas.example.edu/courses/1/assignments/424242",
+        "canvas_due_at": "2026-11-04T06:59:00Z",
+        "tags": [{"name": "Writing", "color": "#22c55e"}],
+    }
+
+    body = _linked(client, parent["id"], [{"title": "Draft outline", **fields}, {"title": "Proofread", "tags": []}])
+
+    new, bare = body["children"]
+    for task in (new, _tasks(client)[new["id"]]):
+        assert (task["title"], task["parent_task_id"], task["position"]) == ("Draft outline", parent["id"], 0)
+        for name, value in fields.items():
+            if name == "tags":
+                # Tags that are sent replace the parent's.
+                assert [t["name"] for t in task["tags"]] == ["Writing"]
+            elif name != "canvas_due_at":
+                assert task[name] == value, name
+    assert bare["tags"] == []
+
+
+def test_fields_next_to_an_existing_tasks_id_are_ignored(client):
+    parent = _create(client, title="Essay", tags=[SCHOOL])
+    other = _create(client, title="Other")
+    existing = _create(client, title="Outline", priority=5, due_date="2026-11-01")
+    echoed = {
+        "id": existing["id"],
+        "title": "Renamed",
+        "due_date": "2026-12-25",
+        "priority": -1,
+        "parent_task_id": other["id"],
+        "tags": [{"name": "Writing", "color": "#22c55e"}],
+        "position": 9,
+    }
+
+    [linked] = _linked(client, parent["id"], [echoed])["children"]
+
+    for task in (linked, _tasks(client)[existing["id"]]):
+        assert (task["title"], task["priority"], task["due_date"]) == ("Outline", 5, "2026-11-01")
+        assert (task["parent_task_id"], task["position"], task["tags"]) == (parent["id"], 0, [])
+
+
+def test_a_new_task_can_start_completed(client):
+    parent = _create(client)
+
+    [done] = _linked(client, parent["id"], [{"title": "Already done", "completed": True}])["children"]
+
+    assert done["completed"] is True and done["completed_date"] is not None
+
+
+def test_new_tasks_are_checked_like_create_task(client, db):
+    parent = _create(client)
+    taken = _create(client, title="Taken", priority=3, canvas_assignment_id=77)
+
+    for children, status in (
+        ([{"title": "Step", "priority": 3}], 400),
+        ([{"title": "One", "priority": 4}, {"title": "Two", "priority": 4}], 400),
+        ([{"title": "Step", "canvas_assignment_id": 77}], 409),
+        ([{"title": "One", "canvas_assignment_id": 78}, {"title": "Two", "canvas_assignment_id": 78}], 409),
+        ([{"title": "Step", "parent_task_id": taken["id"]}], 400),
+    ):
+        assert _set_linked(client, parent["id"], children).status_code == status, children
+        db.rollback()
+
+    assert len(_tasks(client)) == 2
+    # The parent's own id is accepted, as is a completed task on a followed assignment.
+    step = {"title": "Step", "parent_task_id": parent["id"], "canvas_assignment_id": 77, "completed": True}
+    body = _linked(client, parent["id"], [step])
+    assert body["children"][0]["canvas_assignment_id"] == 77
+
+
 def test_a_rejected_save_changes_nothing(client, db):
     parent = _create(client)
     first = _create(client, title="First")
@@ -177,8 +257,11 @@ def test_a_task_cannot_be_listed_twice_or_linked_to_itself(client):
     [
         [{}],
         [{"title": "   "}],
-        [{"id": 1, "title": "Both"}],
         [{"title": "x" * 501}],
+        [{"title": "Step", "reminder_minutes": 0}],
+        [{"title": "Step", "priority": -1}],
+        [{"title": "Step", "canvas_html_url": "javascript:alert(1)"}],
+        [{"title": "Step", "description": "x" * 10001}],
         [{"title": "Step"}] * (LINKED_TASKS_MAX + 1),
     ],
 )
@@ -251,6 +334,16 @@ def test_create_and_update_append_to_the_end(client):
 
     unlinked = client.put(f"/update-task/{first['id']}", json={"title": "First"})
     assert (unlinked.json()["parent_task_id"], unlinked.json()["position"]) == (None, None)
+
+
+def test_create_appends_after_tasks_linked_in_one_save(client):
+    parent = _create(client, title="Parent")
+    existing = _create(client, title="Existing")
+    _linked(client, parent["id"], [{"title": "New"}, {"id": existing["id"]}])
+
+    created = _create(client, title="Created", parent_task_id=parent["id"])
+
+    assert created["position"] == 2
 
 
 def test_update_keeps_the_position_when_the_parent_is_unchanged(client):
