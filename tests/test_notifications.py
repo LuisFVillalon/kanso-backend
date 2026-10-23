@@ -182,6 +182,27 @@ def test_mood_reminder_for_a_call_it_a_day_after_midnight(db):
     assert "mood_reminder:mood:2026-10-20" not in _ids(db, _utc(tomorrow, 1, 0))
 
 
+def test_mood_reminder_follows_the_weekdays_window(db):
+    # Tuesdays end at 17:00; Wednesday has no window, so it uses shutoff_time.
+    _profile(db, shutoff_time="22:00", day_windows={"2": {"start": "09:00", "end": "17:00"}})
+    assert _ids(db, _utc(DAY, 15, 59)) == []
+    reminder = _by_id(db, _utc(DAY, 16, 0))["mood_reminder:mood:2026-10-20"]
+    assert reminder.fire_at == _utc(DAY, 16, 0)
+    assert reminder.body == "Log your mood check-in before you call it a day at 5:00 PM."
+
+    wednesday = DAY + timedelta(days=1)
+    assert _ids(db, _utc(wednesday, 20, 59)) == []
+    reminder = _by_id(db, _utc(wednesday, 21, 0))["mood_reminder:mood:2026-10-21"]
+    assert reminder.body == "Log your mood check-in before you call it a day at 10:00 PM."
+
+
+def test_mood_reminder_lead_is_floored_at_the_weekdays_day_start(db):
+    _profile(db, day_start_time="06:00", day_windows={"2": {"start": "10:00", "end": "11:00"}})
+    update_preferences(db, USER_ID, {"mood_reminder_minutes": 180})
+    assert _ids(db, _utc(DAY, 9, 59)) == []
+    assert _by_id(db, _utc(DAY, 10, 0))["mood_reminder:mood:2026-10-20"].fire_at == _utc(DAY, 10, 0)
+
+
 def test_mood_reminder_follows_call_it_a_day_across_dst(db):
     # 22:00 Pacific is 05:00 UTC the next day before the 2026-11-01 fall
     # back, and 06:00 UTC after it.
@@ -237,6 +258,16 @@ def test_mood_missed_starts_at_the_first_check_in_and_skips_rest_days(db):
     assert missed.dates == [date(2026, 10, 16), date(2026, 10, 19)]
     # Not on a rest day itself.
     assert _ids(db, _utc(date(2026, 10, 24), 7, 0)) == []
+
+
+def test_mood_missed_fires_at_the_weekdays_day_start(db):
+    _mood(db, DAY - timedelta(days=3))
+    _profile(db, day_start_time="07:00", day_windows={"2": {"start": "09:30", "end": "17:00"}})
+    assert "mood_missed:mood:2026-10-20" not in _ids(db, _utc(DAY, 9, 29))
+    assert _by_id(db, _utc(DAY, 9, 30))["mood_missed:mood:2026-10-20"].fire_at == _utc(DAY, 9, 30)
+    # Wednesday has no window, so it uses day_start_time.
+    wednesday = DAY + timedelta(days=1)
+    assert _by_id(db, _utc(wednesday, 7, 0))["mood_missed:mood:2026-10-21"].fire_at == _utc(wednesday, 7, 0)
 
 
 def test_a_stored_retired_daily_setting_is_ignored(db):
