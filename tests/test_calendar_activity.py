@@ -273,8 +273,13 @@ def test_demo_seed_completions_appear_in_activity(client, db):
     activity = _activity(
         client, start_date=(today - timedelta(days=10)).isoformat(), end_date=today.isoformat()
     )
-    seeded_done = {t.title for t in db.query(Task).filter(Task.user_id == USER_ID, Task.completed == True)}  # noqa: E712
-    assert {t["title"] for t in activity["completed_tasks"]} == seeded_done
+    since = datetime.combine(today - timedelta(days=10), time.min)
+    seeded_done = {
+        t.title for t in db.query(Task).filter(
+            Task.user_id == USER_ID, Task.completed == True, Task.completed_date >= since  # noqa: E712
+        )
+    }
+    assert seeded_done and {t["title"] for t in activity["completed_tasks"]} == seeded_done
     assert activity["note_sessions"] and activity["habit_completions"]
 
 

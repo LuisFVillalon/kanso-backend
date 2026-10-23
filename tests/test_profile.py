@@ -88,6 +88,11 @@ def test_day_window_uses_the_weekdays_entry_and_falls_back_to_the_daily_times(db
     assert day_window(profile, tuesday) == ("08:00", "22:00")
 
 
-def test_demo_profile_has_no_day_windows(db):
+def test_demo_profile_has_valid_day_windows_and_a_rest_day(client, db):
     seed_demo_data(db, USER_ID, local_date="2026-10-20")
-    assert get_profile(db, USER_ID).day_windows is None
+    profile = get_profile(db, USER_ID)
+    assert profile.day_windows and profile.rest_days
+    # No window on a rest day, and the saved profile reads back through the API's schema.
+    assert not set(profile.day_windows) & {str(d) for d in profile.rest_days}
+    assert day_window(profile, date(2026, 10, 19)) == ("08:00", "21:00")  # A Monday.
+    assert client.get("/get-profile").json()["day_windows"] == profile.day_windows
