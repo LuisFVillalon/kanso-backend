@@ -284,11 +284,13 @@ def test_demo_seed_adds_aligned_check_ins_before_today(db):
     days = [r for r in rows if r.period_kind == "day"]
     weeks = [r for r in rows if r.period_kind == "week"]
     months = [r for r in rows if r.period_kind == "month"]
-    assert 40 <= len(days) < 60
-    assert all(today - timedelta(days=60) <= r.period_start < today for r in days)
+    assert 60 <= len(days) < 90
+    assert all(today - timedelta(days=90) <= r.period_start < today for r in days)
     assert all(1 <= r.mood <= 5 and r.workload is None for r in days)
     assert weeks and all(r.period_start.weekday() == 0 and r.period_start < today for r in weeks)
-    assert months and all(r.period_start.day == 1 and r.word for r in months)
+    assert len(weeks) >= 12 and len({r.period_start for r in weeks}) == len(weeks)
+    assert len(months) == 3 and all(r.period_start.day == 1 and r.word for r in months)
+    assert max(r.period_start for r in months) < today.replace(day=1)
     assert db.query(Profile).filter(Profile.user_id == USER_ID).one().mood_checkins == {
         "weekly": True,
         "monthly": True,
