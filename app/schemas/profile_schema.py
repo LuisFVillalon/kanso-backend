@@ -8,9 +8,18 @@ from app.schemas.mood_schema import MoodCheckinSettingsUpdate, ResolvedMoodSetti
 
 _Short = Field(None, max_length=SHORT_MAX)
 
-# The two home panels shown side by side: left then right, from the
-# Tasks -> Notes -> Canvas ring.
-HomePanels = Literal["tasks,notes", "notes,canvas", "canvas,tasks"]
+# The home panels switched on, in Tasks -> Notes -> Canvas order. "canvas,tasks"
+# is the legacy left-then-right pair, kept so older saved profiles still validate.
+HomePanels = Literal[
+    "tasks",
+    "notes",
+    "canvas",
+    "tasks,notes",
+    "tasks,canvas",
+    "notes,canvas",
+    "tasks,notes,canvas",
+    "canvas,tasks",
+]
 
 
 class ProfileSave(BaseModel):
