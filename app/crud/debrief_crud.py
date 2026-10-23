@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.crud.habit_crud import get_habits, resolve_today
 from app.crud.note_session_crud import get_time_by_note_for_date, get_time_by_note_for_datetime_range
-from app.crud.profile_crud import get_profile
+from app.crud.profile_crud import day_window, get_profile
 from app.models.note_model import Note as NoteModel
 from app.models.task_model import Task as TaskModel
 from app.schemas.debrief_schema import (
@@ -90,8 +90,9 @@ def _build_workload(profile, due_today: list[TaskModel], today: date) -> Workloa
     if profile:
         weekday = today.isoweekday() % 7  # 0=Sun..6=Sat, matches Profile.rest_days
         is_rest_day = bool(profile.rest_days) and weekday in profile.rest_days
-        if profile.day_start_time and profile.shutoff_time:
-            available_minutes = _minutes_between(profile.day_start_time, profile.shutoff_time)
+        start, end = day_window(profile, today)
+        if start and end:
+            available_minutes = _minutes_between(start, end)
 
     # estimated_time is stored in hours; convert to minutes to match available_minutes.
     committed_minutes = sum(float(t.estimated_time) * 60 for t in due_today if t.estimated_time)

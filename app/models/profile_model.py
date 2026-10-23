@@ -15,6 +15,9 @@ class Profile(Base):
     page_style = Column(String, nullable=True)
     day_start_time = Column(String(5), nullable=True)
     rest_days = Column(JSON, nullable=True)
+    # Per-weekday work windows, {"0".."6": {"start": "HH:MM", "end": "HH:MM"}};
+    # a weekday without one uses day_start_time and shutoff_time.
+    day_windows = Column(JSON, nullable=True)
     layout_order = Column(JSON, nullable=True)
     layout_sizes = Column(JSON, nullable=True)
     app_mode = Column(String, nullable=True)
