@@ -7,15 +7,20 @@ student's term with class, work and personal tags; open tasks (overdue, due
 today, upcoming, linked tasks, two linked to the sample Canvas assignments);
 about three months of completed tasks, habit logs, note editing sessions and
 daily, weekly and monthly mood check-ins, so Reports has history for every
-range; per-weekday work windows with a rest day; a term tracker and an
-archived term.
+range, drawn so each month shows a different kind of link between mood and
+activity (see _plan_history); per-weekday work windows with a rest day; a
+term tracker and an archived term.
 
 A fixed random seed keeps the sample the same for the same local date.
 seed_demo_data() first wipes every row the sandbox user owns, so reloading
 the demo always starts from the same baseline.
 """
 
+import math
 import random
+import statistics
+from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
 from sqlalchemy.orm import Session
@@ -109,11 +114,12 @@ def seed_demo_data(db: Session, user_id: str, local_date: str | None = None) -> 
 
     tags = {name: _make_tag(db, name, color, user_id) for name, color in _TAGS.items()}
 
+    plan = _plan_history(today)
     _seed_open_tasks(db, user_id, today, now, tags)
-    _seed_task_history(db, user_id, today, now, tags, rng)
-    _seed_habits(db, user_id, today, now, tags, rng)
-    _seed_notes(db, user_id, today, now, tags, rng)
-    _seed_mood_checkins(db, user_id, today)
+    _seed_task_history(db, user_id, today, now, tags, rng, plan)
+    _seed_habits(db, user_id, today, tags, rng, plan)
+    _seed_notes(db, user_id, today, now, tags, rng, plan)
+    _seed_mood_checkins(db, user_id, today, plan)
 
     db.commit()
 
@@ -210,6 +216,183 @@ def _seed_open_tasks(db: Session, user_id: str, today: date, now: datetime, tags
                 parent=parent, position=position)
 
 
+# ── History plan ─────────────────────────────────────────────────────────────
+# Reports › Mood › Patterns ("Mood & your activity") compares each day's mood
+# with the tasks finished, minutes in notes and habits checked off that day,
+# one point per day with a daily check-in. Each calendar month of the history
+# is drawn to show a different result there, by months back from today:
+#   0  this month: about 85% of days checked in; mood higher on days with more
+#      tasks done, an "Early sign" while there are under 20 check-ins.
+#   1  last month: every day checked in; tasks a strong link, note time a
+#      moderate one the other way (mood lower on days with more), habits none.
+#   2  the month before: 24 check-ins; habits a moderate link, worded as a
+#      hint for having under 30 days; tasks and note time none.
+#   3  anything older, where the history starts: check-ins on about a third
+#      of days, usually too few for a pattern.
+# Across the whole history, note time reads as a slight link in the Year view.
+# The labels come from the frontend's analyseCorrelation
+# (src/app/utils/calendarReport.ts); tests/test_demo_mood_links.py ports it
+# and checks each month's result.
+
+# Per months back and metric: the correlation the day's amount is drawn with
+# against mood, and the band its rank correlation with mood over that month's
+# check-ins is redrawn until it falls in.
+_LINKS = {
+    0: {"tasks": (0.85, 0.6, 1.0), "note_minutes": (-0.15, -0.25, 0.0), "habits": (0.0, -0.15, 0.15)},
+    1: {"tasks": (0.85, 0.55, 1.0), "note_minutes": (-0.5, -0.47, -0.37), "habits": (0.0, -0.1, 0.1)},
+    2: {"tasks": (0.0, -0.15, 0.15), "note_minutes": (-0.2, -0.25, -0.1), "habits": (0.8, 0.5, 1.0)},
+    3: {"tasks": (0.5, -1.0, 1.0), "note_minutes": (-0.3, -0.6, 0.0), "habits": (0.2, -1.0, 1.0)},
+}
+# The band for note time over the year's check-ins, held when the year holds
+# months 1 and 2.
+_YEAR_NOTE_LINK = (-0.29, -0.24)
+# Months with fewer check-ins aren't held to a band.
+_MIN_CHECK_INS = 10
+_MAX_DRAWS = 30
+# Mood runs a little brighter on weekends and a little lower on Mondays.
+_MOOD_LIFT = {0: -0.2, 5: 0.3, 6: 0.3}
+# Typical tasks finished by weekday, Monday first: fewer on weekends and the rest day.
+_TASK_BASE = (2.6, 2.6, 2.6, 2.6, 2.4, 1.4, 0.8)
+_MAX_NOTE_MINUTES = 120
+
+
+@dataclass
+class _Day:
+    """One day of history: the daily check-in's mood (None when skipped) and
+    how much got done, counted the way Reports counts it."""
+
+    day: date
+    mood: int | None = None
+    tasks: int = 0
+    note_minutes: int = 0
+    habits: int = 0
+
+
+def _months_back(today: date, day: date) -> int:
+    return min((today.year - day.year) * 12 + today.month - day.month, 3)
+
+
+def _rank_correlation(days: list[_Day], metric: str) -> float:
+    """Spearman's ρ between mood and a metric over the days; 0 when either never changes."""
+    try:
+        return statistics.correlation(
+            [getattr(d, metric) for d in days], [d.mood for d in days], method="ranked"
+        )
+    except statistics.StatisticsError:
+        return 0.0
+
+
+def _open_tasks_finished(today: date) -> Counter[date]:
+    """How many of the open tasks' finished ones (_OPEN_TASKS, _LINKED_TASKS) fall on each past day."""
+    offsets = [offset for _, offset, _, done, *_ in _OPEN_TASKS if done and offset is not None and offset < 0]
+    offsets += [offset for *_, children in _LINKED_TASKS for _, offset, done, _ in children if done and offset < 0]
+    return Counter(today + timedelta(days=offset) for offset in offsets)
+
+
+def _habit_streaks(today: date) -> dict[str, tuple[set[date], date]]:
+    """Each habit's current streak days and the missed day just before them."""
+    streaks = {}
+    for title, _, _, streak, done_today, _, _ in _HABITS:
+        newest = today if done_today else today - timedelta(days=1)
+        streaks[title] = ({newest - timedelta(days=i) for i in range(streak)}, newest - timedelta(days=streak))
+    return streaks
+
+
+def _habit_options(streaks: dict[str, tuple[set[date], date]], day: date) -> tuple[list[str], list[str]]:
+    """The habits logged on a day for their current streak, and the ones that may be."""
+    forced, optional = [], []
+    for title, _, _, _, _, _, weekdays_only in _HABITS:
+        streak, missed = streaks[title]
+        if day in streak:
+            forced.append(title)
+        elif day != missed and not (weekdays_only and day.weekday() >= 5):
+            optional.append(title)
+    return forced, optional
+
+
+def _note_options(days_ago: int) -> tuple[list[str], list[str]]:
+    """The notes that exist on a day, and those created or last edited that day, which need a session."""
+    alive = [title for title, _, _, created, edited in _NOTES if edited <= days_ago <= created]
+    forced = [title for title, _, _, created, edited in _NOTES if days_ago in (created, edited)]
+    return alive, forced
+
+
+def _plan_history(today: date) -> list[_Day]:
+    """The last HISTORY_DAYS days' check-ins and amounts, each month drawn to its _LINKS."""
+    rng = random.Random(today.toordinal())
+    days = [_Day(today - timedelta(days=offset)) for offset in range(HISTORY_DAYS, 0, -1)]
+    months: dict[int, list[_Day]] = {}
+    for d in days:
+        months.setdefault(_months_back(today, d.day), []).append(d)
+
+    # Each day's floor and ceiling per metric: open tasks finished that day,
+    # habits on a streak, notes created or last edited that day.
+    finished = _open_tasks_finished(today)
+    streaks = _habit_streaks(today)
+    limits: dict[date, dict[str, tuple[int, int]]] = {}
+    for d in days:
+        forced, optional = _habit_options(streaks, d.day)
+        alive, edited = _note_options((today - d.day).days)
+        limits[d.day] = {
+            "tasks": (finished[d.day], max(6, finished[d.day])),
+            "habits": (len(forced), len(forced) + len(optional)),
+            "note_minutes": (10 * len(edited), _MAX_NOTE_MINUTES if alive else 0),
+        }
+
+    def amount(metric: str, day: date, z: float) -> int:
+        if metric == "tasks":
+            value = round(_TASK_BASE[day.weekday()] + 1.4 * z)
+        elif metric == "habits":
+            value = round(3.6 + 1.5 * z)
+        else:
+            value = 5 * round((35 + 25 * z) / 5)
+        low, high = limits[day][metric]
+        return min(high, max(low, value))
+
+    # A latent mood per day: the check-in's mood rounds it, and each metric
+    # follows it as closely as its _LINKS strength.
+    latent: dict[date, float] = {}
+
+    def draw(back: int, month: list[_Day], metric: str) -> bool:
+        """Draws the month's amounts for a metric until it lands in its band; False if it never does."""
+        strength, low, high = _LINKS[back][metric]
+        checked = [d for d in month if d.mood is not None]
+        for _ in range(_MAX_DRAWS):
+            for d in month:
+                z = strength * latent[d.day] + math.sqrt(1 - strength**2) * rng.gauss(0, 1)
+                setattr(d, metric, amount(metric, d.day, z))
+            if len(checked) < _MIN_CHECK_INS or low <= _rank_correlation(checked, metric) <= high:
+                return True
+        return False
+
+    for back, month in months.items():
+        if back == 1:
+            checked = {d.day for d in month}
+        elif back == 2:
+            checked = {d.day for d in rng.sample(month, min(24, len(month)))}
+        else:
+            checked = {d.day for d in month if rng.random() < (0.85 if back == 0 else 0.3)}
+        # A month whose moods leave no room for its links (nearly all 3s, say) is drawn again.
+        for _ in range(_MAX_DRAWS):
+            for d in month:
+                latent[d.day] = rng.gauss(0, 1)
+                if d.day in checked:
+                    lift = _MOOD_LIFT.get(d.day.weekday(), 0.0)
+                    d.mood = min(5, max(1, round(3.3 + lift + latent[d.day])))
+            if all(draw(back, month, metric) for metric in ("tasks", "habits", "note_minutes")):
+                break
+
+    if today.month >= 3:
+        year = [d for d in days if d.day.year == today.year and d.mood is not None]
+        low, high = _YEAR_NOTE_LINK
+        for _ in range(_MAX_DRAWS):
+            if low <= _rank_correlation(year, "note_minutes") <= high:
+                break
+            for back, month in months.items():
+                draw(back, month, "note_minutes")
+    return days
+
+
 # ── Completed task history ───────────────────────────────────────────────────
 # Title templates per tag; {n} counts up from the oldest task of that template.
 _HISTORY_TEMPLATES = {
@@ -228,22 +411,17 @@ _HISTORY_WEIGHTS = {"CS 460": 5, "MATH 254": 4, "PSY 101": 3, "COMM 103": 2, "AR
 
 
 def _seed_task_history(
-    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], rng: random.Random
+    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], rng: random.Random,
+    plan: list[_Day],
 ) -> None:
-    """Completed tasks on most days of the last HISTORY_DAYS, fewer on weekends and the rest day."""
+    """Completed tasks for each planned day, less the open tasks finished that day."""
     names = list(_HISTORY_WEIGHTS)
     weights = list(_HISTORY_WEIGHTS.values())
     counters: dict[str, int] = {}
-    for offset in range(HISTORY_DAYS, 0, -1):
-        day = today - timedelta(days=offset)
-        weekday = day.weekday()
-        if weekday == 6:
-            count = rng.choice((0, 0, 1))
-        elif weekday == 5:
-            count = rng.choice((0, 1, 2))
-        else:
-            count = rng.choice((1, 2, 2, 3, 4))
-        for _ in range(count):
+    open_finished = _open_tasks_finished(today)
+    for planned in plan:
+        day = planned.day
+        for _ in range(planned.tasks - open_finished[day]):
             tag = rng.choices(names, weights)[0]
             template = rng.choice(_HISTORY_TEMPLATES[tag])
             counters[template] = counters.get(template, 0) + 1
@@ -266,8 +444,8 @@ def _seed_task_history(
 
 
 # ── Habits ───────────────────────────────────────────────────────────────────
-# (title, est. hours, tags, current streak, done today, chance of a log on an
-# earlier day, weekdays only)
+# (title, est. hours, tags, current streak, done today, how readily it's one of
+# an earlier day's check-ins, weekdays only)
 _HABITS = [
     ("Drink 8 glasses of water", None, ["Health"], 21, True, 0.9, False),
     ("Morning meditation", 0.25, ["Health", "Personal"], 12, True, 0.8, False),
@@ -280,63 +458,79 @@ _HABITS = [
 
 
 def _seed_habits(
-    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], rng: random.Random
+    db: Session, user_id: str, today: date, tags: dict[str, Tag], rng: random.Random, plan: list[_Day]
 ) -> None:
-    """Each habit's current streak, the miss that started it, and patchier history before."""
-    for title, hours, tag_names, streak, done_today, rate, weekdays_only in _HABITS:
-        newest = today if done_today else today - timedelta(days=1)
-        logged = {newest - timedelta(days=i) for i in range(streak)}
-        streak_start = newest - timedelta(days=streak)
-        for offset in range(HISTORY_DAYS, 0, -1):
-            day = today - timedelta(days=offset)
-            if day >= streak_start or (weekdays_only and day.weekday() >= 5):
-                continue
-            if rng.random() < rate:
-                logged.add(day)
+    """Each habit's current streak, the miss that started it, and before that
+    as many check-ins each day as planned, favoring the habits kept up more."""
+    streaks = _habit_streaks(today)
+    logged = {title: set(streak) for title, (streak, _) in streaks.items()}
+    rates = {title: rate for title, _, _, _, _, rate, _ in _HABITS}
+    for planned in plan:
+        forced, optional = _habit_options(streaks, planned.day)
+        # A weighted draw without replacement: each habit's key is u^(1/rate).
+        optional.sort(key=lambda title: rng.random() ** (1 / rates[title]), reverse=True)
+        for title in optional[: planned.habits - len(forced)]:
+            logged[title].add(planned.day)
 
+    for title, hours, tag_names, _, done_today, _, _ in _HABITS:
+        newest = today if done_today else today - timedelta(days=1)
         habit = Habit(
             title=title,
             user_id=user_id,
-            current_streak=_streak_ending_on(logged, newest),
-            max_streak=_max_streak_from_dates(logged),
+            current_streak=_streak_ending_on(logged[title], newest),
+            max_streak=_max_streak_from_dates(logged[title]),
             estimated_time=hours,
         )
         habit.tags = [tags[name] for name in tag_names]
         db.add(habit)
         db.flush()
-        db.add_all(HabitLog(habit_id=habit.id, logged_date=day) for day in sorted(logged))
+        db.add_all(HabitLog(habit_id=habit.id, logged_date=day) for day in sorted(logged[title]))
 
 
 
 # ── Notes ────────────────────────────────────────────────────────────────────
-# (title, html, tags, days since created, days since last edit, editing sessions)
+# (title, html, tags, days since created, days since last edit)
 _NOTES = [
-    ("Binary search trees", demo_notes.BST, ["CS 460"], 30, 0, 6),
-    ("Dynamic programming patterns", demo_notes.DYNAMIC_PROGRAMMING, ["CS 460"], 12, 1, 5),
-    ("Eigenvalues cheat sheet", demo_notes.EIGENVALUES, ["MATH 254"], 9, 2, 4),
-    ("Memory: encoding, storage, retrieval", demo_notes.MEMORY, ["PSY 101"], 20, 3, 4),
-    ("Informative speech outline", demo_notes.SPEECH_OUTLINE, ["COMM 103"], 6, 0, 3),
-    ("Value and shading", demo_notes.DRAWING, ["ART 157"], 45, 10, 3),
-    ("Internship applications", demo_notes.INTERNSHIPS, ["Work"], 35, 4, 6),
-    ("Library desk retro", demo_notes.RETRO, ["Work"], 25, 18, 2),
-    ("Fall semester goals", demo_notes.SEMESTER_GOALS, ["Personal"], 85, 40, 3),
-    ("Weekly review template", demo_notes.WEEKLY_REVIEW, ["Personal"], 70, 7, 5),
-    ("Atomic Habits: key ideas", demo_notes.HABITS, ["Personal", "Health"], 60, 15, 3),
-    ("Weeknight stir fry", demo_notes.RECIPE, [], 50, 22, 2),
+    ("Binary search trees", demo_notes.BST, ["CS 460"], 30, 0),
+    ("Dynamic programming patterns", demo_notes.DYNAMIC_PROGRAMMING, ["CS 460"], 12, 1),
+    ("Eigenvalues cheat sheet", demo_notes.EIGENVALUES, ["MATH 254"], 9, 2),
+    ("Memory: encoding, storage, retrieval", demo_notes.MEMORY, ["PSY 101"], 20, 3),
+    ("Informative speech outline", demo_notes.SPEECH_OUTLINE, ["COMM 103"], 6, 0),
+    ("Value and shading", demo_notes.DRAWING, ["ART 157"], 45, 10),
+    ("Internship applications", demo_notes.INTERNSHIPS, ["Work"], 35, 4),
+    ("Library desk retro", demo_notes.RETRO, ["Work"], 25, 18),
+    ("Fall semester goals", demo_notes.SEMESTER_GOALS, ["Personal"], 90, 40),
+    ("Weekly review template", demo_notes.WEEKLY_REVIEW, ["Personal"], 70, 7),
+    ("Atomic Habits: key ideas", demo_notes.HABITS, ["Personal", "Health"], 60, 15),
+    ("Weeknight stir fry", demo_notes.RECIPE, [], 50, 22),
 ]
 
 
 def _seed_notes(
-    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], rng: random.Random
+    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], rng: random.Random,
+    plan: list[_Day],
 ) -> None:
-    """Notes of different ages, each with editing sessions spread from its creation to its last edit."""
-    for title, content, tag_names, created_days, edited_days, sessions in _NOTES:
-        span = created_days - edited_days
-        days = sorted({edited_days + round(span * i / max(sessions - 1, 1)) for i in range(sessions)}, reverse=True)
-        ranges = []
-        for days_ago in days:
-            ended = _at(today - timedelta(days=days_ago), rng.randint(16, 23), rng.choice((0, 20, 40)), now)
-            ranges.append((ended - timedelta(minutes=rng.randint(10, 50)), ended))
+    """Notes of different ages, with editing sessions adding up to each day's
+    planned minutes, on the day each note was created and the day it was last edited."""
+    sessions: dict[str, list[tuple[datetime, datetime]]] = {title: [] for title, *_ in _NOTES}
+    _, edited_today = _note_options(0)
+    minutes_by_day = [(p.day, p.note_minutes) for p in plan] + [(today, 5 * rng.randint(3, 8) * len(edited_today))]
+    for day, minutes in minutes_by_day:
+        if not minutes:
+            continue
+        alive, edited = _note_options((today - day).days)
+        titles = edited or [rng.choice(alive)]
+        if len(titles) == 1 and minutes >= 60 and len(alive) > 1:
+            titles.append(rng.choice([title for title in alive if title != titles[0]]))
+        # Back to back, the last one ending between 19:00 and 22:40 UTC.
+        ended = _at(day, rng.randint(19, 22), rng.choice((0, 20, 40)), now)
+        for i, title in enumerate(titles):
+            length = minutes // len(titles) + (minutes % len(titles) if i == 0 else 0)
+            sessions[title].append((ended - timedelta(minutes=length), ended))
+            ended -= timedelta(minutes=length + rng.randint(15, 45))
+
+    for title, content, tag_names, _, _ in _NOTES:
+        ranges = sorted(sessions[title])
         note = Note(
             title=title,
             content=content.strip(),
@@ -383,24 +577,18 @@ _DAY_NOTES = (
 )
 
 
-def _seed_mood_checkins(db: Session, user_id: str, today: date) -> None:
-    """About 80% of the last HISTORY_DAYS days checked in, and every past week and month in that span.
+def _seed_mood_checkins(db: Session, user_id: str, today: date, plan: list[_Day]) -> None:
+    """The planned daily check-ins, and every past week and month in the history.
 
     Today, this week and this month are left open so the dashboard nudges
     still have something to ask. A fixed seed keeps the sample the same on
     every reset.
     """
     rng = random.Random(7)
-    for offset in range(HISTORY_DAYS, 0, -1):
-        day = today - timedelta(days=offset)
-        if rng.random() < 0.2:
+    for planned in plan:
+        day, mood = planned.day, planned.mood
+        if mood is None:
             continue
-        # Weekends run a little brighter, Mondays a little lower, and the
-        # weeks around midterms (about a month ago) a little lower still.
-        lift = {0: -0.6, 5: 0.6, 6: 0.5}.get(day.weekday(), 0.0)
-        if 21 <= offset <= 35:
-            lift -= 0.5
-        mood = min(5, max(1, round(3.4 + lift + rng.gauss(0, 0.9))))
         tags = []
         if mood >= 4 and rng.random() < 0.6:
             tags.append(rng.choice(("Exercised", "Outdoors", "Social", "Slept well")))
