@@ -2,8 +2,9 @@
 Seed data generator for "Try the demo" sandboxes.
 
 Builds a fresh dataset (tasks, habits + streak history, notes + editing
-time, mood check-ins, a term tracker) anchored to the visitor's local date, so the demo
-always looks current no matter when someone clicks "Try the demo".
+time, mood check-ins, a term tracker and an archived term) anchored to the
+visitor's local date, so the demo always looks current no matter when
+someone clicks "Try the demo".
 seed_demo_data() first wipes every row the sandbox user owns, so reloading
 the demo always starts from the same baseline.
 """
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.crud.account_crud import delete_user_rows
 from app.crud.habit_crud import resolve_today
+from app.models.archived_term_model import ArchivedTerm
 from app.models.calendar_settings_model import CalendarSettings
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
@@ -99,6 +101,13 @@ def seed_demo_data(db: Session, user_id: str, local_date: str | None = None) -> 
         title="Fall Semester",
         start_date=today - timedelta(days=40),
         end_date=today + timedelta(days=70),
+    ))
+    # The term before it, archived, so the month calendar shows a past term too.
+    db.add(ArchivedTerm(
+        user_id=user_id,
+        title="Summer Session",
+        start_date=today - timedelta(days=120),
+        end_date=today - timedelta(days=50),
     ))
 
     school_tag = _make_tag(db, "School", "#8b5cf6", user_id)

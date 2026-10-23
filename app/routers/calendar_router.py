@@ -6,10 +6,16 @@ from sqlalchemy.orm import Session
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_date_range, require_found, require_time_zone
 from app.crud.activity_crud import get_calendar_activity
-from app.crud.calendar_crud import get_calendar_settings, upsert_calendar_settings
+from app.crud.calendar_crud import (
+    archive_current_term,
+    delete_archived_term,
+    get_calendar_settings,
+    list_archived_terms,
+    upsert_calendar_settings,
+)
 from app.database.database import get_db
 from app.schemas.activity_schema import CalendarActivity
-from app.schemas.calendar_schema import CalendarSettings, CalendarSettingsUpdate
+from app.schemas.calendar_schema import ArchivedTerm, CalendarSettings, CalendarSettingsUpdate
 
 router = APIRouter()
 
@@ -32,6 +38,34 @@ def update_calendar_settings(
     db: Session = Depends(get_db),
 ):
     return upsert_calendar_settings(db, current_user.id, changes.model_dump(exclude_none=True))
+
+
+@router.get("/get-archived-terms", response_model=list[ArchivedTerm])
+def read_archived_terms(
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The user's archived terms, earliest first, so the month calendar can show past terms."""
+    return list_archived_terms(db, current_user.id)
+
+
+@router.post("/archive-term", response_model=ArchivedTerm)
+def archive_term(
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Archive the current term tracker, freeing the user to set up a new one."""
+    return require_found(archive_current_term(db, current_user.id), "No calendar settings found")
+
+
+@router.delete("/del-archived-term/{term_id}", response_model=ArchivedTerm)
+def delete_archived_term_by_id(
+    term_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete an archived term for good, returning it."""
+    return require_found(delete_archived_term(db, term_id, current_user.id), "Archived term not found")
 
 
 @router.get("/get-calendar-activity", response_model=CalendarActivity)
