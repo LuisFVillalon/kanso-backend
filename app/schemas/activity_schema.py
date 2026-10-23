@@ -51,6 +51,23 @@ class ActivityHabitCompletion(BaseModel):
     estimated_time: float | None = None
 
 
+class ActivityNote(BaseModel):
+    id: int
+    title: str
+    tags: VisibleTags = []
+
+    model_config = {"from_attributes": True}
+
+
+class ActivityHabit(BaseModel):
+    id: int
+    title: str
+    estimated_time: float | None = None
+    tags: VisibleTags = []
+
+    model_config = {"from_attributes": True}
+
+
 class CalendarActivity(BaseModel):
     start_date: date
     end_date: date
@@ -61,3 +78,6 @@ class CalendarActivity(BaseModel):
     # Closed note editing sessions that overlap the range.
     note_sessions: list[ActivityNoteSession] = []
     habit_completions: list[ActivityHabitCompletion] = []
+    # The notes and habits behind those sessions and completions, with their tags.
+    notes: list[ActivityNote] = []
+    habits: list[ActivityHabit] = []
