@@ -330,3 +330,59 @@ def test_include_archived_adds_archived_items_but_never_trashed_ones(client, db)
     scheduled = titles(_activity(client, include_archived="true"))["scheduled"]
     assert scheduled[-2:] == ["Parent", "Subtask"]
     assert titles(_activity(client))["scheduled"] == ["Active"]
+
+
+def test_notes_and_habits_in_range_carry_their_tags(client, db):
+    school = Tag(name="School", color="#8b5cf6", user_id=USER_ID)
+    health = Tag(name="Health", color="#22c55e", user_id=USER_ID)
+    old = Tag(name="Old", color="#64748b", user_id=USER_ID, archived_at=datetime.now(UTC))
+    gone = Tag(name="Gone", color="#ef4444", user_id=USER_ID, deleted_at=datetime.now(UTC))
+    db.add_all([school, health, old, gone])
+    note = _note(db, "Binary search trees")
+    note.tags = [school, old, gone]
+    _session(db, note, datetime(2026, 10, 13, 9, 0), datetime(2026, 10, 13, 10, 0))
+    _session(db, note, datetime(2026, 10, 14, 9, 0), datetime(2026, 10, 14, 10, 0))
+    outside = _note(db, "Outside the week")
+    outside.tags = [school]
+    _session(db, outside, datetime(2026, 10, 1, 9, 0), datetime(2026, 10, 1, 10, 0))
+    other = _note(db, "Someone else's", user_id=OTHER_USER_ID)
+    _session(db, other, datetime(2026, 10, 13, 9, 0), datetime(2026, 10, 13, 10, 0))
+    run = _habit(db, "Run", [WEEK_START, WEEK_END], estimated_time=0.5)
+    run.tags = [health, school]
+    _habit(db, "Untagged", [WEEK_START])
+    _habit(db, "Not this week", [WEEK_END + timedelta(days=1)])
+    _habit(db, "Someone else's", [WEEK_START], user_id=OTHER_USER_ID)
+    db.commit()
+
+    activity = _activity(client)
+    assert [(n["id"], n["title"]) for n in activity["notes"]] == [(note.id, "Binary search trees")]
+    assert sorted(t["name"] for t in activity["notes"][0]["tags"]) == ["Old", "School"]
+    assert [(h["id"], h["title"], h["estimated_time"]) for h in activity["habits"]] == [
+        (run.id, "Run", 0.5),
+        (activity["habits"][1]["id"], "Untagged", None),
+    ]
+    assert sorted(t["name"] for t in activity["habits"][0]["tags"]) == ["Health", "School"]
+    assert activity["habits"][1]["tags"] == []
+
+
+def test_archived_items_tags_come_with_include_archived(client, db):
+    tag = Tag(name="Health", color="#22c55e", user_id=USER_ID)
+    db.add(tag)
+    habit = _habit(db, "Archived habit", [WEEK_START])
+    habit.tags = [tag]
+    note = _note(db, "Archived note", archived=True)
+    note.tags = [tag]
+    _session(db, note, datetime(2026, 10, 13, 9, 0), datetime(2026, 10, 13, 10, 0))
+    db.commit()
+    assert client.patch(f"/archive-habit/{habit.id}").status_code == 200
+
+    default = _activity(client)
+    assert default["notes"] == [] and default["habits"] == []
+
+    activity = _activity(client, include_archived="true")
+    assert [(h["title"], [t["name"] for t in h["tags"]]) for h in activity["habits"]] == [
+        ("Archived habit", ["Health"])
+    ]
+    assert [(n["title"], [t["name"] for t in n["tags"]]) for n in activity["notes"]] == [
+        ("Archived note", ["Health"])
+    ]

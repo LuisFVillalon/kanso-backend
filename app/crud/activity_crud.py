@@ -10,7 +10,9 @@ from app.models.note_model import Note as NoteModel
 from app.models.note_session_model import NoteSession as NoteSessionModel
 from app.models.task_model import Task as TaskModel
 from app.schemas.activity_schema import (
+    ActivityHabit,
     ActivityHabitCompletion,
+    ActivityNote,
     ActivityNoteSession,
     ActivityTask,
     CalendarActivity,
@@ -27,8 +29,9 @@ def get_calendar_activity(
 ) -> CalendarActivity:
     """Everything the user planned or did across local days start..end inclusive:
     tasks due in the range, tasks completed in it, note editing sessions and
-    habit completions. Deleted tasks, notes and habits are left out, and so are
-    archived ones unless `include_archived` is set.
+    habit completions, plus the notes and habits behind those with their tags.
+    Deleted tasks, notes and habits are left out, and so are archived ones
+    unless `include_archived` is set.
 
     Due dates and habit log dates are already local calendar dates. Completion
     and session timestamps are UTC, so they are matched against the UTC
@@ -94,6 +97,21 @@ def get_calendar_activity(
         habit_query = habit_query.filter(Habit.archived_at.is_(None))
     habit_rows = habit_query.order_by(HabitLog.logged_date, func.lower(Habit.title), Habit.id).all()
 
+    # The rows above are already owner scoped and filtered for deleted and
+    # archived items, so their ids are the notes and habits to describe.
+    note_ids = {s.note_id for s, _ in session_rows}
+    notes = (
+        db.query(NoteModel).options(selectinload(NoteModel.tags)).filter(NoteModel.id.in_(note_ids))
+        .order_by(func.lower(NoteModel.title), NoteModel.id).all()
+        if note_ids else []
+    )
+    habit_ids = {habit_id for _, habit_id, _, _ in habit_rows}
+    habits = (
+        db.query(Habit).options(selectinload(Habit.tags)).filter(Habit.id.in_(habit_ids))
+        .order_by(func.lower(Habit.title), Habit.id).all()
+        if habit_ids else []
+    )
+
     return CalendarActivity(
         start_date=start,
         end_date=end,
@@ -114,4 +132,6 @@ def get_calendar_activity(
             ActivityHabitCompletion(habit_id=habit_id, habit_title=title, date=logged, estimated_time=hours)
             for logged, habit_id, title, hours in habit_rows
         ],
+        notes=[ActivityNote.model_validate(n) for n in notes],
+        habits=[ActivityHabit.model_validate(h) for h in habits],
     )
