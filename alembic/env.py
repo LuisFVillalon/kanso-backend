@@ -36,6 +36,7 @@ from app.models import (  # ensure every model is visible to autogenerate
     tag_model,
     task_model,
     task_tag_model,
+    term_rollover_model,
 )
 
 target_metadata = Base.metadata

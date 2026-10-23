@@ -11,13 +11,14 @@ from app.models.notification_model import NotificationPreferences, NotificationS
 from app.models.profile_model import Profile
 from app.models.tag_model import Tag
 from app.models.task_model import Task
+from app.models.term_rollover_model import TermRollover
 
 # Every table holding rows scoped to a user_id. Adding a new user-owned table?
 # Add its model here — account deletion and the demo reset both rely on it.
 # note_sessions, habit_logs and the task/note/habit tag join tables cascade
 # from their parents at the database level.
 USER_OWNED_MODELS = (
-    Note, Task, Habit, Tag, Profile, Drawing, CalendarSettings, ArchivedTerm,
+    Note, Task, Habit, Tag, Profile, Drawing, CalendarSettings, ArchivedTerm, TermRollover,
     NotificationPreferences, NotificationState,
     MoodCheckin,
     CanvasConnection,
