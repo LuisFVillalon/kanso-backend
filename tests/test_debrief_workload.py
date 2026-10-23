@@ -38,3 +38,9 @@ def test_a_weekdays_window_counts_without_daily_times(client, db):
     db.commit()
     assert _workload(client, MONDAY)["available_minutes"] == 8.5 * 60
     assert _workload(client, TUESDAY)["available_minutes"] is None
+
+
+def test_a_weekdays_window_can_run_past_midnight(client, db):
+    db.add(Profile(user_id=USER_ID, name="Test", day_windows={"1": {"start": "20:00", "end": "03:00"}}))
+    db.commit()
+    assert _workload(client, MONDAY)["available_minutes"] == 7 * 60

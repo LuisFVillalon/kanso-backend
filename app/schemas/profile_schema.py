@@ -27,15 +27,15 @@ _HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 
 class DayWindow(BaseModel):
-    """One weekday's work window, as local "HH:MM" times on the same day."""
+    """One weekday's work window, as local "HH:MM" times; an end at or before the start is the next day."""
 
     start: str = Field(pattern=_HHMM)
     end: str = Field(pattern=_HHMM)
 
     @model_validator(mode="after")
-    def _end_after_start(self):
-        if self.end <= self.start:
-            raise ValueError("end must be after start")
+    def _end_differs_from_start(self):
+        if self.end == self.start:
+            raise ValueError("end must differ from start")
         return self
 
 

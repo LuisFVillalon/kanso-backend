@@ -39,7 +39,7 @@ def test_home_panels_rejects_other_values(client, value):
 
 # ── Per-weekday work windows ─────────────────────────────────────────────────
 
-WINDOWS = {"1": {"start": "09:00", "end": "17:00"}, "5": {"start": "07:30", "end": "12:00"}}
+WINDOWS = {"1": {"start": "09:00", "end": "17:00"}, "5": {"start": "17:00", "end": "09:00"}}
 
 
 def test_day_windows_round_trip(client):
@@ -63,7 +63,6 @@ def test_day_windows_round_trip(client):
         {"1": {"start": "9:00", "end": "17:00"}},
         {"1": {"start": "09:00", "end": "24:00"}},
         {"1": {"start": "09:60", "end": "17:00"}},
-        {"1": {"start": "17:00", "end": "09:00"}},
         {"1": {"start": "09:00", "end": "09:00"}},
         {"1": {"start": "09:00"}},
         {"1": None},
