@@ -12,7 +12,10 @@ def test_home_panels_defaults_to_null(client, db):
     assert client.get("/get-profile").json()["home_panels"] is None
 
 
-@pytest.mark.parametrize("value", ["tasks,notes", "notes,canvas", "canvas,tasks"])
+@pytest.mark.parametrize(
+    "value",
+    ["tasks", "notes", "canvas", "tasks,notes", "tasks,canvas", "notes,canvas", "tasks,notes,canvas", "canvas,tasks"],
+)
 def test_home_panels_round_trips(client, value):
     resp = client.post("/save-profile", json={"name": "Test", "home_panels": value})
     assert resp.status_code == 200
@@ -24,7 +27,7 @@ def test_home_panels_round_trips(client, value):
     assert client.post("/save-profile", json={"name": "Test", "home_panels": None}).json()["home_panels"] is None
 
 
-@pytest.mark.parametrize("value", ["notes,tasks", "tasks", "tasks,notes,canvas", "", "Tasks,Notes", 1])
+@pytest.mark.parametrize("value", ["notes,tasks", "calendar", "tasks,tasks", "canvas,notes", "", "Tasks,Notes", 1])
 def test_home_panels_rejects_other_values(client, value):
     resp = client.post("/save-profile", json={"name": "Test", "home_panels": value})
     assert resp.status_code == 422
