@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -16,5 +16,15 @@ class CalendarSettings(BaseModel):
     title: str
     start_date: date
     end_date: date
+
+    model_config = {"from_attributes": True}
+
+
+class ArchivedTerm(BaseModel):
+    id: int
+    title: str
+    start_date: date
+    end_date: date
+    archived_at: datetime
 
     model_config = {"from_attributes": True}

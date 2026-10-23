@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.models.archived_term_model import ArchivedTerm
 from app.models.calendar_settings_model import CalendarSettings
 from app.models.canvas_connection_model import CanvasConnection
 from app.models.drawing_model import Drawing
@@ -16,7 +17,8 @@ from app.models.task_model import Task
 # note_sessions, habit_logs and the task/note/habit tag join tables cascade
 # from their parents at the database level.
 USER_OWNED_MODELS = (
-    Note, Task, Habit, Tag, Profile, Drawing, CalendarSettings, NotificationPreferences, NotificationState,
+    Note, Task, Habit, Tag, Profile, Drawing, CalendarSettings, ArchivedTerm,
+    NotificationPreferences, NotificationState,
     MoodCheckin,
     CanvasConnection,
 )
