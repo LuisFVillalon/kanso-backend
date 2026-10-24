@@ -60,7 +60,7 @@ def test_mood_remind_off_carries_over_to_the_mood_notification_switches(db):
         migration.upgrade()
     db.expire_all()
 
-    off = {"task_reminder": True, "mood_reminder": False, "mood_missed": False}
+    off = {"task_reminder": True, "mood_reminder": False, "mood_missed": False, "event_reminder": True}
     assert get_preferences(db, kept).types == {**off, "task_reminder": False}
     assert get_preferences(db, kept).mood_reminder_minutes == 45
     assert get_preferences(db, fresh).types == off
@@ -87,7 +87,7 @@ def test_mood_daily_off_carries_over_to_the_mood_reminder_switch(db):
         migration.upgrade()
     db.expire_all()
 
-    off = {"task_reminder": True, "mood_reminder": False, "mood_missed": True}
+    off = {"task_reminder": True, "mood_reminder": False, "mood_missed": True, "event_reminder": True}
     assert get_preferences(db, kept).types == {**off, "task_reminder": False}
     assert get_preferences(db, kept).mood_reminder_minutes == 45
     assert get_preferences(db, fresh).types == off

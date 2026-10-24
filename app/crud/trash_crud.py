@@ -1,8 +1,10 @@
 """
-The trash: deleted tasks, notes, tags and habits, kept for TRASH_RETENTION.
+The trash: deleted tasks, notes, tags, habits and events, kept for TRASH_RETENTION.
 
 Deleting one of these sets its deleted_at instead of removing the row, so
-its tags, habit logs and note sessions survive for a restore. Every normal
+its tags, habit logs and note sessions survive for a restore. One deleted
+occurrence of a repeating event is its exception row's deleted_at (see
+event_crud). Every normal
 list, lookup and stat leaves deleted rows out (see base.get_owned).
 
 Expired rows are purged for every user at once, with no scheduler:
@@ -20,6 +22,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.crud.base import TRASH_RETENTION, get_owned, trash_cutoff
+from app.models.event_model import Event, EventException
 from app.models.habit_model import Habit
 from app.models.note_model import Note
 from app.models.tag_model import Tag
@@ -27,15 +30,17 @@ from app.models.task_model import Task
 from app.schemas.task_schema import TaskParent
 from app.schemas.trash_schema import TrashItem
 
-TRASHABLE_MODELS = {"task": Task, "note": Note, "tag": Tag, "habit": Habit}
+TRASHABLE_MODELS = {"task": Task, "note": Note, "tag": Tag, "habit": Habit, "event": Event}
 
 
 def purge_expired(db: Session) -> None:
     """Permanently delete every user's rows deleted more than TRASH_RETENTION ago. Does not commit.
 
     One delete per table, served by its deleted_at index. Tag links, habit
-    logs and note sessions go with their rows (ON DELETE CASCADE); subtasks
-    of a purged task are detached first, found by the parent_task_id index.
+    logs, note sessions and event exceptions go with their rows (ON DELETE
+    CASCADE); subtasks of a purged task are detached first, found by the
+    parent_task_id index. An expired event occurrence is cancelled instead,
+    so its series doesn't bring it back.
     Concurrent runs are safe: a row another run already deleted is just
     skipped.
     """
@@ -50,6 +55,12 @@ def purge_expired(db: Session) -> None:
         )
     for model in TRASHABLE_MODELS.values():
         db.execute(delete(model).where(model.deleted_at <= cutoff).execution_options(synchronize_session="fetch"))
+    db.execute(
+        update(EventException)
+        .where(EventException.deleted_at <= cutoff)
+        .values(deleted_at=None, cancelled=True)
+        .execution_options(synchronize_session="fetch")
+    )
 
 
 def get_trash(db: Session, user_id: str) -> list[TrashItem]:
@@ -74,6 +85,25 @@ def get_trash(db: Session, user_id: str) -> list[TrashItem]:
             )
             for row in rows
         )
+    # Occurrences deleted on their own, while their series is live (a
+    # deleted series stands for all of its occurrences).
+    occurrences = (
+        db.query(EventException, Event.title)
+        .join(Event, Event.id == EventException.event_id)
+        .filter(Event.user_id == user_id, Event.deleted_at.is_(None), EventException.deleted_at.isnot(None))
+        .all()
+    )
+    items.extend(
+        TrashItem(
+            kind="event",
+            id=exc.event_id,
+            title=exc.title or series_title,
+            deleted_at=exc.deleted_at,
+            purge_at=exc.deleted_at + TRASH_RETENTION,
+            occurrence_date=exc.occurrence_date,
+        )
+        for exc, series_title in occurrences
+    )
     return sorted(items, key=lambda item: item.deleted_at, reverse=True)
 
 

@@ -170,14 +170,16 @@ def read_calendar_activity(
         False,
         description=(
             "Also include archived tasks, archived notes' sessions and archived habits' logs. "
-            "Deleted (trashed) items are always left out."
+            "Deleted (trashed) items are always left out. Events ignore it: past archived "
+            "occurrences are always in, upcoming archived ones always out."
         ),
     ),
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return the user's planned and completed tasks, note sessions and habit
-    completions across [start_date, end_date], for the calendar week view and
-    weekly/monthly/yearly reports (which ask for archived items too)."""
+    """Return the user's planned and completed tasks, note sessions, habit
+    completions and event occurrences across [start_date, end_date], for the
+    calendar week view and weekly/monthly/yearly reports (which ask for
+    archived items too)."""
     require_date_range(start_date, end_date, ACTIVITY_RANGE_MAX_DAYS)
     return get_calendar_activity(db, current_user.id, start_date, end_date, require_time_zone(tz), include_archived)

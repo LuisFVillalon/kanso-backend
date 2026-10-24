@@ -3,6 +3,7 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel
 
+from app.schemas.event_schema import EventOccurrence
 from app.schemas.tag_schema import VisibleTags
 from app.schemas.task_schema import TaskParent
 
@@ -81,3 +82,6 @@ class CalendarActivity(BaseModel):
     # The notes and habits behind those sessions and completions, with their tags.
     notes: list[ActivityNote] = []
     habits: list[ActivityHabit] = []
+    # Event occurrences on a day in the range, in start order: past ones,
+    # archived or not, and upcoming ones that aren't archived.
+    events: list[EventOccurrence] = []

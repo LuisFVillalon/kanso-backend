@@ -33,3 +33,6 @@ CANVAS_HIDDEN_COURSES_MAX = 500
 CANVAS_COURSE_TAGS_MAX = 500
 # Canvas ids, stored as BIGINT.
 CANVAS_ID_MAX = 2**63 - 1
+# Events: "every N weeks" and the stored IANA time zone name.
+REPEAT_INTERVAL_MAX = 52
+TIME_ZONE_MAX = 64

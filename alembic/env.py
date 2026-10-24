@@ -24,6 +24,8 @@ from app.models import (  # ensure every model is visible to autogenerate
     calendar_settings_model,
     canvas_connection_model,
     drawing_model,
+    event_model,
+    event_tag_model,
     habit_log_model,
     habit_model,
     habit_tag_model,

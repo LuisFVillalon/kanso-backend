@@ -17,6 +17,7 @@ from app.routers import (
     debrief_router,
     demo_router,
     drawing_router,
+    events_router,
     habits_router,
     mood_router,
     notes_router,
@@ -106,6 +107,7 @@ app.include_router(trash_router.router)
 app.include_router(notifications_router.router)
 app.include_router(mood_router.router)
 app.include_router(canvas_router.router)
+app.include_router(events_router.router)
 
 
 @app.get("/", include_in_schema=False)

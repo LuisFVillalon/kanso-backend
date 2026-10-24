@@ -1,11 +1,13 @@
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.crud.event_occurrence_crud import todays_events
 from app.crud.habit_crud import get_habits, resolve_today
 from app.crud.note_session_crud import get_time_by_note_for_date, get_time_by_note_for_datetime_range
-from app.crud.profile_crud import day_window, get_profile
+from app.crud.profile_crud import day_window, get_profile, parse_hhmm
 from app.models.note_model import Note as NoteModel
 from app.models.task_model import Task as TaskModel
 from app.schemas.debrief_schema import (
@@ -83,30 +85,46 @@ def _local_day_bounds_utc(today: date, now_time: time | None) -> tuple[datetime,
     return day_start_utc, day_start_utc + timedelta(days=1)
 
 
-def _build_workload(profile, due_today: list[TaskModel], today: date) -> WorkloadCapacity:
+def _work_window(profile, today: date) -> tuple[time, time] | None:
+    """Today's (start, end) work window from the profile, or None if it isn't set."""
+    start, end = day_window(profile, today)
+    if not (start and end):
+        return None
+    start_time, end_time = parse_hhmm(start), parse_hhmm(end)
+    return (start_time, end_time) if start_time and end_time else None
+
+
+def _build_workload(profile, due_today: list[TaskModel], today: date, event_minutes: float) -> WorkloadCapacity:
+    """Capacity for today's tasks: the work window less the time events take in it."""
     is_rest_day = False
-    available_minutes = None
+    window_minutes = None
 
     if profile:
         weekday = today.isoweekday() % 7  # 0=Sun..6=Sat, matches Profile.rest_days
         is_rest_day = bool(profile.rest_days) and weekday in profile.rest_days
         start, end = day_window(profile, today)
         if start and end:
-            available_minutes = _minutes_between(start, end)
+            window_minutes = _minutes_between(start, end)
 
     # estimated_time is stored in hours; convert to minutes to match available_minutes.
     committed_minutes = sum(float(t.estimated_time) * 60 for t in due_today if t.estimated_time)
 
-    utilization_pct = None
+    available_minutes = free_minutes = utilization_pct = None
     is_overcommitted = False
-    if available_minutes:
-        utilization_pct = round((committed_minutes / available_minutes) * 100, 1)
+    if window_minutes is not None:
+        available_minutes = max(0.0, window_minutes - event_minutes)
+        free_minutes = max(0.0, available_minutes - committed_minutes)
         is_overcommitted = committed_minutes > available_minutes
+        if available_minutes:
+            utilization_pct = round((committed_minutes / available_minutes) * 100, 1)
 
     return WorkloadCapacity(
         is_rest_day=is_rest_day,
+        window_minutes=window_minutes,
+        event_minutes=event_minutes if window_minutes is not None else 0,
         available_minutes=available_minutes,
         committed_minutes=committed_minutes,
+        free_minutes=free_minutes,
         utilization_pct=utilization_pct,
         is_overcommitted=is_overcommitted,
     )
@@ -172,10 +190,15 @@ def build_daily_debrief(
     user_id: str,
     local_date: str | None = None,
     local_time: str | None = None,
+    tz: ZoneInfo | None = None,
 ) -> DailyDebriefReport:
     """Assemble the daily debrief report: overdue/due-today tasks, habit status,
-    workload capacity, and a unified 'focus next' recommendation block.
+    today's events, workload capacity, and a unified 'focus next' recommendation block.
     Archived and deleted tasks, notes and habits are left out of every section.
+
+    tz is the caller's time zone, which events are placed in; without it each
+    event is read in its own time zone. Event time inside today's work window
+    comes out of the capacity left for tasks.
 
     local_date/local_time are the caller's own calendar date and clock time
     (not the server's). The server may run in a different timezone (e.g. UTC),
@@ -240,7 +263,8 @@ def build_daily_debrief(
     notes_worked_today = _build_notes_worked_today(db, user_id, today, day_bounds)
 
     profile = get_profile(db, user_id)
-    workload = _build_workload(profile, due_today, today)
+    events = todays_events(db, user_id, today, now_time, tz, _work_window(profile, today))
+    workload = _build_workload(profile, due_today, today, events.window_minutes_taken)
 
     focus_next = _build_focus_next(open_tasks, today)
 
@@ -253,4 +277,8 @@ def build_daily_debrief(
         habit_status=habit_status,
         workload=workload,
         focus_next=focus_next,
+        events_today=events.shown,
+        passed_events_today=events.passed,
+        event_minutes_by_tag=events.minutes_by_tag,
+        passed_event_minutes_by_tag=events.passed_minutes_by_tag,
     )
