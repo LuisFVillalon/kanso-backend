@@ -201,8 +201,10 @@ class EventReportPeriod(BaseModel):
 class EventReport(BaseModel):
     start_date: date
     end_date: date
-    # Occurrences that start in the range, archived ones included.
+    # Occurrences that start in the range: past ones (archived or not) and
+    # upcoming ones that aren't archived; upcoming archived ones are left out.
     event_count: int = 0
+    # Past archived occurrences in the range; upcoming archived ones are left out.
     archived_count: int = 0
     # Minutes of events in the range. All-day events count but add no minutes.
     total_minutes: float = 0

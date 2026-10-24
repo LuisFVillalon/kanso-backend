@@ -332,8 +332,8 @@ def get_event_report(db: Session, user_id: str, first: date, last: date, tz: Zon
     """Event time over local days first..last: by tag, day, week and month, and
     how much of the work windows events left free.
 
-    Counts what the calendar shows, so past archived occurrences are in and
-    upcoming archived ones are not. A day's work window is its profile
+    Counts what the calendar shows: archived_count counts past archived
+    occurrences, and upcoming archived ones are left out of every figure. A day's work window is its profile
     day_windows entry or the day start and "Call it a day" times (8 AM to
     10 PM if unset); rest days have none.
     """

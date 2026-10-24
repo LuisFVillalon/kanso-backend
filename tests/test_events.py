@@ -31,10 +31,10 @@ def _create(client, **fields) -> dict:
 
 def _occurrences(client, first: date, last: date, tz=PACIFIC) -> list[dict]:
     resp = client.get(
-        "/get-event-occurrences", params={"start_date": first.isoformat(), "end_date": last.isoformat(), "tz": tz}
+        "/get-calendar-activity", params={"start_date": first.isoformat(), "end_date": last.isoformat(), "tz": tz}
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()
+    return resp.json()["events"]
 
 
 def _days(occurrences: list[dict]) -> list[str]:

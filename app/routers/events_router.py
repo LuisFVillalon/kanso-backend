@@ -15,7 +15,7 @@ from app.crud.event_crud import (
     set_event_archived,
     update_event,
 )
-from app.crud.event_occurrence_crud import get_archived_occurrences, get_event_report, get_occurrences
+from app.crud.event_occurrence_crud import get_archived_occurrences, get_event_report
 from app.database.database import get_db
 from app.routers.calendar_router import ACTIVITY_RANGE_MAX_DAYS
 from app.schemas.event_schema import EditScope, Event, EventCreate, EventOccurrence, EventReport, EventUpdate
@@ -59,21 +59,6 @@ def read_event(
     return require_found(get_event(db, event_id, current_user.id), "Event not found")
 
 
-@router.get("/get-event-occurrences", response_model=list[EventOccurrence])
-def read_event_occurrences(
-    start_date: date = _START,
-    end_date: date = _END,
-    tz: str = _TZ,
-    current_user: UserInfo = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Return the event occurrences on local days start_date..end_date, as the
-    calendar shows them: past ones (archived ones flagged) and upcoming ones
-    that aren't archived. /get-calendar-activity includes the same list."""
-    require_date_range(start_date, end_date, ACTIVITY_RANGE_MAX_DAYS)
-    return get_occurrences(db, current_user.id, start_date, end_date, require_time_zone(tz), datetime.now(UTC))
-
-
 @router.get("/get-archived-event-occurrences", response_model=list[EventOccurrence])
 def read_archived_event_occurrences(
     tz: str = _TZ,
@@ -95,7 +80,7 @@ def read_event_report(
 ):
     """Return event time over local days start_date..end_date for Reports → Events:
     by tag, day, week and month, and the free time events leave in the work windows.
-    Past archived occurrences count; upcoming archived ones don't."""
+    archived_count counts past archived occurrences; upcoming archived ones are left out."""
     require_date_range(start_date, end_date, ACTIVITY_RANGE_MAX_DAYS)
     return get_event_report(db, current_user.id, start_date, end_date, require_time_zone(tz), datetime.now(UTC))
 
