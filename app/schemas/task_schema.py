@@ -129,6 +129,11 @@ class Task(TaskBase):
     # top-level task.
     parent_task: TaskParent | None = None
     tags: VisibleTags = []
+    # Set server-side when the Canvas linked-task sync completed the task
+    # because its assignment was done on Canvas; kept if the user reopens it.
+    canvas_completed_at: datetime | None = None
+    # Completed by that sync and not reopened since: show "Done in Canvas".
+    completed_by_canvas: bool = False
 
     model_config = {"from_attributes": True}
 

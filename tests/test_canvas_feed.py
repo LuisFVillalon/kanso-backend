@@ -283,7 +283,7 @@ def test_connecting_a_feed_stores_only_ciphertext_and_returns_a_masked_status(cl
     assert body["capabilities"] == {
         "upcoming": True, "classes": True, "missing": False, "recently_graded": False, "courses": False,
         "modules": False, "assignments": False, "announcements": False, "link_tasks": True,
-        "submission_status": False,
+        "submission_status": False, "done_status": False,
     }
     assert CODE not in response.text and CODE[:-4] not in client.get("/canvas/connection").text
     assert len(feed.requests) == 1
@@ -496,6 +496,7 @@ def test_the_overview_lists_the_feeds_next_week(feed_connected, feed):
         "id": 101, "kind": "assignment", "title": "Problem Set 6", "course_id": 11,
         "course_name": "CS 460-01 Fall 2026", "due_at": problem_set["due_at"], "points_possible": None,
         "html_url": f"{BASE_URL}/courses/11/assignments/101", "submission": None,
+        "marked_complete": False, "done": False, "done_reason": None,
         "uid": "event-assignment-101", "all_day": False, "day": None, "linkable": True,
     }
     assert datetime.fromisoformat(problem_set["due_at"]) == SOON.replace(microsecond=0)
@@ -678,8 +679,8 @@ def test_sync_follows_the_feeds_due_dates_without_submission_status(feed_connect
     # A task following an assignment by id matches its feed item, event-assignment-<id>.
     assert results[by_id["id"]]["synced"] is True
     assert datetime.fromisoformat(results[by_id["id"]]["due_at"]) == FAR.replace(microsecond=0)
-    assert results[gone["id"]] == {"task_id": gone["id"], "synced": False, "submitted": False, "due_at": None,
-                                   "due_changed": False}
+    assert results[gone["id"]] == {"task_id": gone["id"], "synced": False, "submitted": False, "done": False,
+                                   "done_reason": None, "due_at": None, "due_changed": False, "completed": False}
 
 
 def test_a_token_linked_all_day_assignment_keeps_its_edited_due_date_on_the_feed(feed_connected, db):
@@ -874,8 +875,8 @@ def test_sync_leaves_tasks_linked_at_another_school_alone(feed_connected, db):
         "canvas_html_url": "https://canvas.ucsd.edu/courses/11/assignments/101", "due_date": "2030-01-01",
     }).json()
     result = _sync(feed_connected)["results"][0]
-    assert result == {"task_id": other["id"], "synced": False, "submitted": False, "due_at": None,
-                      "due_changed": False}
+    assert result == {"task_id": other["id"], "synced": False, "submitted": False, "done": False,
+                      "done_reason": None, "due_at": None, "due_changed": False, "completed": False}
     assert _task(db, other["id"]).due_date.date().isoformat() == "2030-01-01"
 
 

@@ -58,7 +58,8 @@ def test_canvas_linked_tasks_already_match_the_sample_assignments(db):
     linked = [t for t in _tasks(db) if t.canvas_assignment_id is not None]
     assert linked
 
-    results = sync_sample(db, USER_ID, ZoneInfo("America/Los_Angeles"), TODAY)
+    la = ZoneInfo("America/Los_Angeles")
+    results = sync_sample(db, USER_ID, la, datetime.combine(TODAY, time(12), tzinfo=la))
     assert {r.task_id for r in results} == {t.id for t in linked}
     assert all(r.synced and not r.due_changed for r in results)
 

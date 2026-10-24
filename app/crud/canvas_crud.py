@@ -41,7 +41,7 @@ _TOKEN = re.compile(rf"[\x21-\x7e]{{16,{CANVAS_TOKEN_MAX}}}")
 CAPABILITIES = {
     "token": CanvasCapabilities(
         upcoming=True, classes=True, missing=True, recently_graded=True, courses=True, modules=True,
-        assignments=True, announcements=True, link_tasks=True, submission_status=True,
+        assignments=True, announcements=True, link_tasks=True, submission_status=True, done_status=True,
     ),
     # A feed has the user's items and their dates, and nothing else; its classes come from those items.
     "feed": CanvasCapabilities(upcoming=True, classes=True, link_tasks=True),
@@ -77,6 +77,7 @@ def connection_out(row: CanvasConnection | None, now: datetime) -> CanvasConnect
         time_zone=row.time_zone,
         token_expires_at=row.token_expires_at,
         hidden_course_ids=row.hidden_course_ids or [],
+        auto_complete=row.auto_complete is not False,
         created_at=row.created_at,
         updated_at=row.updated_at,
         last_synced_at=row.last_synced_at,
@@ -267,12 +268,20 @@ def check_connection(db: Session, user_id: str, now: datetime) -> CanvasConnecti
     return row
 
 
-def update_connection(db: Session, user_id: str, hidden_course_ids: list[int]) -> CanvasConnection | None:
-    """Set the courses hidden under "Courses to show". None if not connected."""
+def update_connection(
+    db: Session, user_id: str, hidden_course_ids: list[int] | None = None, auto_complete: bool | None = None
+) -> CanvasConnection | None:
+    """Set the courses hidden under "Courses to show" and auto_complete; None leaves one as it is.
+
+    None if not connected.
+    """
     row = get_connection(db, user_id)
     if row is None:
         return None
-    row.hidden_course_ids = sorted(set(hidden_course_ids))
+    if hidden_course_ids is not None:
+        row.hidden_course_ids = sorted(set(hidden_course_ids))
+    if auto_complete is not None:
+        row.auto_complete = auto_complete
     db.commit()
     db.refresh(row)
     return row

@@ -82,11 +82,26 @@ class Task(Base):
     # other source only re-records them, since the two give the same due date
     # in different forms.
     canvas_due_source = Column(String(8), nullable=True)
+    # When the linked-task sync completed the task because its Canvas item was
+    # done, stored like completed_date (which it then equals); NULL otherwise.
+    # Kept when the user reopens the task, so the sync doesn't complete it
+    # again, and cleared when it's linked to another assignment.
+    canvas_completed_at = Column(DateTime, nullable=True)
     user_id = Column(String(36), nullable=True, index=True)
     # Set when the task is archived; NULL means active.
     archived_at = Column(DateTime(timezone=True), nullable=True)
     # Set when the task is deleted (moved to the trash); NULL otherwise.
     deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def completed_by_canvas(self) -> bool:
+        """Completed by the linked-task sync, and not reopened or re-completed by the user since."""
+        return (
+            bool(self.completed)
+            and self.canvas_completed_at is not None
+            and self.completed_date == self.canvas_completed_at
+        )
+
     tags = relationship(
         "Tag",
         secondary=task_tags,

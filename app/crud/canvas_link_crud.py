@@ -3,12 +3,19 @@ Tasks added from the Canvas panel ("Add to tasks"), which follow their Canvas
 assignment.
 
 Such a task has canvas_assignment_id and canvas_html_url set. sync() reads
-each open linked task's assignment from Canvas and reports whether it has
-been submitted, so the frontend can offer to complete the task; it never
-completes a task itself. When the assignment's due date differs from the one
-the last sync saw (canvas_due_at), the task's due_date and due_time are moved
-to it, in the caller's time zone, to the minute (an assignment with no due
-date clears them). A due date the user changed while Canvas's stayed the
+each open linked task's assignment from Canvas and reports whether it is
+done: submitted, graded, excused, or checked off with "Mark as done" in
+Canvas's planner (read from the user's planner overrides). A task whose
+assignment is done is completed, with canvas_completed_at set to the same
+instant as completed_date, unless the connection's auto_complete is off. A
+task the sync completed once and the user reopened (canvas_completed_at
+still set) isn't completed again, and a completed task is never touched, so
+Canvas un-marking an item leaves its task as it is.
+
+When the assignment's due date differs from the one the last sync saw
+(canvas_due_at), the task's due_date and due_time are moved to it, in the
+caller's time zone, to the minute (an assignment with no due date clears
+them). A due date the user changed while Canvas's stayed the
 same is left alone. The first sync from another source than the one that
 stored those values (canvas_due_source: a token, or a calendar feed) only
 records the new source's, without moving the task.
@@ -17,8 +24,10 @@ The course comes from canvas_html_url (/courses/{id}/...), which must be on
 the connection's Canvas host. Each course's assignments are read through
 canvas_data_crud.read(), so they share the panel's cache, its fetch limits
 and its handling of a rejected token. A sync reads at most MAX_SYNC_COURSES
-courses. A task whose course or assignment can't be read comes back with
-synced=false and is left alone: no course in its link, a course or
+courses, then the planner overrides (canvas_data_crud.read_marked_complete);
+overrides that can't be read, or are cut off at the page cap, only leave
+marked_complete out, with stale set. A task whose course or
+assignment can't be read comes back with synced=false and is left alone: no course in its link, a course or
 assignment Canvas no longer shows, a course past the cap, or Canvas busy
 or down partway through. If Canvas is busy or down before any course is
 read, the error is raised instead.
@@ -26,7 +35,8 @@ read, the error is raised instead.
 With a calendar feed connection, sync() reads the feed once (sharing the
 overview's cache) and matches each open task that follows an assignment by
 its feed UID, event-assignment-<canvas_assignment_id>. Only due dates sync:
-a feed has no submissions, so submitted is always false. All-day items are
+a feed has no submissions or planner overrides, so submitted and done are
+always false and no task is completed. All-day items are
 due in the connection's time_zone, whatever the caller's, and are compared
 by date with the task's canvas_due_date, with no zone involved. A
 task whose item isn't in the feed, or whose link is on another school's
@@ -34,7 +44,7 @@ host, comes back with synced=false and is left alone.
 """
 
 import re
-from datetime import date, datetime, time
+from datetime import datetime, time
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -96,8 +106,13 @@ def _due_moved(task: TaskModel, assignment: CanvasItem) -> bool:
     return assignment.due_at != task.canvas_due_at
 
 
-def _apply(task: TaskModel, assignment: CanvasItem, zone: ZoneInfo) -> CanvasLinkedTaskSync:
-    """Move the task's due date to the assignment's if Canvas changed it since the last sync, and report its state."""
+def _apply(
+    task: TaskModel, assignment: CanvasItem, zone: ZoneInfo, now: datetime, auto_complete: bool
+) -> CanvasLinkedTaskSync:
+    """Move the task's due date to the assignment's if Canvas changed it since the last sync, and report its state.
+
+    With auto_complete, a task whose assignment is done is completed, unless a sync completed it before.
+    """
     changed = False
     feed = isinstance(assignment, CanvasFeedItem)
     source = "feed" if feed else "token"
@@ -120,12 +135,20 @@ def _apply(task: TaskModel, assignment: CanvasItem, zone: ZoneInfo) -> CanvasLin
             task.due_date = datetime.combine(due_date, time()) if due_date else None
             task.due_time = due_time
         task.canvas_due_at = assignment.due_at
+    completed = auto_complete and assignment.done and task.canvas_completed_at is None
+    if completed:
+        task.completed = True
+        task.completed_date = now
+        task.canvas_completed_at = now
     return CanvasLinkedTaskSync(
         task_id=task.id,
         synced=True,
         submitted=assignment.submission is not None and assignment.submission.submitted,
+        done=assignment.done,
+        done_reason=assignment.done_reason,
         due_at=assignment.due_at,
         due_changed=changed,
+        completed=completed,
     )
 
 
@@ -144,7 +167,7 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
     row = get_connection(db, user_id)
     if row is None:
         raise CanvasNotConnected("Canvas isn't connected.")
-    base_url = row.base_url
+    base_url, auto_complete = row.base_url, row.auto_complete is not False
     course_of = {task_id: course_id_of(base_url, html_url) for task_id, _, html_url in links}
     courses = sorted({c for c in course_of.values() if c is not None})[:MAX_SYNC_COURSES]
 
@@ -169,6 +192,11 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
         assignments.update({(course_id, a.id): a for a in result.data})
     if error is not None and not reads:
         raise error
+    marked: frozenset[int] = frozenset()
+    if error is None:
+        overrides = canvas_data_crud.read_marked_complete(db, user_id, now, refresh)
+        reads.append(overrides)
+        marked = overrides.data
 
     results = []
     tasks = {t.id: t for t in _open_linked_tasks(db, user_id, [task_id for task_id, _, _ in links])}
@@ -178,7 +206,9 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
         if task is None or assignment is None or task.canvas_assignment_id != assignment_id:
             results.append(_unsynced(task_id))
         else:
-            results.append(_apply(task, assignment, zone))
+            if assignment.id in marked:
+                assignment = assignment.model_copy(update={"marked_complete": True})
+            results.append(_apply(task, assignment, zone, now, auto_complete))
     db.commit()
     return {
         "fetched_at": min((r.fetched_at for r in reads), default=now),
@@ -197,7 +227,7 @@ def _sync_feed(
     db: Session, user_id: str, connection: CanvasConnection, zone: ZoneInfo, now: datetime, refresh: bool
 ) -> dict:
     """sync() against the calendar feed. See the module docstring."""
-    base_url = connection.base_url
+    base_url, auto_complete = connection.base_url, connection.auto_complete is not False
     links = [(t.id, _feed_uid(t)) for t in _open_linked_tasks(db, user_id)]
     if not links:
         return {"fetched_at": now, "results": []}
@@ -217,17 +247,20 @@ def _sync_feed(
         ):
             results.append(_unsynced(task_id))
         else:
-            results.append(_apply(task, item, zone))
+            results.append(_apply(task, item, zone, now, auto_complete))
     db.commit()
     return {"fetched_at": result.fetched_at, "busy": result.busy, "stale": result.stale, "results": results}
 
 
-def sync_sample(db: Session, user_id: str, zone: ZoneInfo, today: date) -> list[CanvasLinkedTaskSync]:
-    """sync() for a demo sandbox, against the sample assignments by id, without calling Canvas."""
-    sample = canvas_sample.assignments_by_id(today, zone)
+def sync_sample(db: Session, user_id: str, zone: ZoneInfo, now: datetime) -> list[CanvasLinkedTaskSync]:
+    """sync() for a demo sandbox, against the sample assignments by id, without calling Canvas.
+
+    A sandbox has no connection, so auto_complete is on.
+    """
+    sample = canvas_sample.assignments_by_id(now.astimezone(zone).date(), zone)
     results = []
     for task in _open_linked_tasks(db, user_id):
         assignment = sample.get(task.canvas_assignment_id)
-        results.append(_unsynced(task.id) if assignment is None else _apply(task, assignment, zone))
+        results.append(_unsynced(task.id) if assignment is None else _apply(task, assignment, zone, now, True))
     db.commit()
     return results

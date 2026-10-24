@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, computed_field
 
 from app.schemas.limits import CANVAS_HIDDEN_COURSES_MAX, CANVAS_URL_MAX, TAGS_PER_ITEM_MAX
 from app.schemas.tag_schema import Tag
@@ -34,7 +34,9 @@ class CanvasFeedConnect(BaseModel):
 
 
 class CanvasConnectionUpdate(BaseModel):
-    hidden_course_ids: list[Annotated[int, Field(ge=1)]] = Field(max_length=CANVAS_HIDDEN_COURSES_MAX)
+    # Each is left as it is when omitted.
+    hidden_course_ids: list[Annotated[int, Field(ge=1)]] | None = Field(None, max_length=CANVAS_HIDDEN_COURSES_MAX)
+    auto_complete: bool | None = None
 
 
 class CanvasCapabilities(BaseModel):
@@ -56,6 +58,9 @@ class CanvasCapabilities(BaseModel):
     link_tasks: bool = False
     # The linked-task sync reports whether an assignment was submitted.
     submission_status: bool = False
+    # Items carry done (submitted, graded, excused or checked off in Canvas),
+    # and the linked-task sync completes tasks whose item is done.
+    done_status: bool = False
 
 
 class CanvasConnectionOut(BaseModel):
@@ -78,6 +83,8 @@ class CanvasConnectionOut(BaseModel):
     time_zone: str | None = None
     token_expires_at: datetime | None = None
     hidden_course_ids: list[int] = []
+    # The linked-task sync completes a task once its Canvas item is done.
+    auto_complete: bool = True
     created_at: datetime | None = None
     updated_at: datetime | None = None
     last_synced_at: datetime | None = None
@@ -89,6 +96,8 @@ class CanvasConnectionOut(BaseModel):
 # Every html_url is an https link on the school's own Canvas host, or null.
 
 CanvasItemKind = Literal["assignment", "quiz", "discussion", "page", "event", "note", "other"]
+# Why an item counts as done, in this order when several apply.
+CanvasDoneReason = Literal["excused", "graded", "submitted", "marked_complete"]
 
 
 class CanvasSubmission(BaseModel):
@@ -105,6 +114,17 @@ class CanvasSubmission(BaseModel):
     graded_at: datetime | None = None
 
 
+def done_reason(submission: CanvasSubmission | None, marked_complete: bool) -> CanvasDoneReason | None:
+    if submission is not None:
+        if submission.excused:
+            return "excused"
+        if submission.graded and (submission.submitted or not submission.missing):
+            return "graded"
+        if submission.submitted:
+            return "submitted"
+    return "marked_complete" if marked_complete else None
+
+
 class CanvasItem(BaseModel):
     """Something with a due date: an assignment, quiz, discussion, page, event or planner note."""
 
@@ -117,6 +137,19 @@ class CanvasItem(BaseModel):
     points_possible: float | None = None
     html_url: str | None = None
     submission: CanvasSubmission | None = None
+    # Checked off with "Mark as done" in Canvas's planner; a token's only.
+    marked_complete: bool = False
+
+    @computed_field
+    @property
+    def done_reason(self) -> CanvasDoneReason | None:
+        """Why the item is done, or null. Always null for a calendar feed, which carries neither."""
+        return done_reason(self.submission, self.marked_complete)
+
+    @computed_field
+    @property
+    def done(self) -> bool:
+        return self.done_reason is not None
 
 
 class CanvasFeedItem(CanvasItem):
@@ -292,9 +325,16 @@ class CanvasLinkedTaskSync(BaseModel):
     task_id: int
     # False when the assignment couldn't be read, so the task was left alone.
     synced: bool
-    # Canvas shows the assignment submitted: offer to complete the task.
-    # Always false for a calendar feed, which doesn't carry submissions.
+    # Canvas shows the assignment submitted. Always false for a calendar
+    # feed, which doesn't carry submissions.
     submitted: bool = False
+    # The assignment is done on Canvas, and why (see CanvasItem). Always
+    # false for a calendar feed.
+    done: bool = False
+    done_reason: CanvasDoneReason | None = None
+    # This sync completed the task because the assignment is done and the
+    # connection's auto_complete is on; the task now has canvas_completed_at.
+    completed: bool = False
     # The assignment's due date on Canvas; null if it has none (or not synced).
     due_at: datetime | None = None
     # The task's due date and time were moved to due_at.

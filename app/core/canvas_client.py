@@ -185,6 +185,10 @@ class CanvasClient:
 
     def get_list(self, path: str, params: dict | None = None) -> list:
         """GET a paginated list at /api/v1{path}: every page up to MAX_PAGES, retrying while rate-limited."""
+        return self.get_pages(path, params)[0]
+
+    def get_pages(self, path: str, params: dict | None = None) -> tuple[list, bool]:
+        """get_list's items, and whether they are the whole list: False when MAX_PAGES cut it short."""
         url = httpx.URL(f"{self.base_url}/api/v1{path}", params=params)
         items: list = []
         for _ in range(MAX_PAGES):
@@ -194,11 +198,11 @@ class CanvasClient:
             items.extend(body)
             next_url = self._next_page(headers)
             if next_url is None:
-                break
+                return items, True
             url = next_url
             if _remaining(headers) < LOW_QUOTA:
                 _sleep(LOW_QUOTA_PAUSE)
-        return items
+        return items, False
 
     def _send_retrying(self, url: httpx.URL):
         for delay in RETRY_DELAYS:
