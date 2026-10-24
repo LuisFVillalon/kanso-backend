@@ -39,7 +39,7 @@ def get_or_create_tag(db: Session, tag_data, user_id: str) -> TagModel:
 
 
 def set_item_tags(db: Session, item, tags_data, user_id: str) -> None:
-    """Replace a task's, note's or habit's tags by name.
+    """Replace a task's, note's, habit's or event's tags by name.
 
     An archived tag the item didn't already carry is restored, since newly
     attaching it means the user wants it. Tags already on the item stay
