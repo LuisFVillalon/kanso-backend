@@ -606,7 +606,7 @@ def _tag_days(db: Session, user_id: str) -> dict[date, set[str]]:
         .filter(NoteSession.user_id == user_id)
     )
     for at, name in [*finished, *edited]:
-        days[at.astimezone(UTC).date()].add(name)
+        days[(at if at.tzinfo is None else at.astimezone(UTC)).date()].add(name)
     return days
 
 
