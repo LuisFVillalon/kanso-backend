@@ -8,8 +8,9 @@ today, upcoming, linked tasks, two linked to the sample Canvas assignments);
 about three months of completed tasks, habit logs, note editing sessions and
 daily, weekly and monthly mood check-ins, so Reports has history for every
 range, drawn so each month shows a different kind of link between mood and
-activity (see _plan_history); per-weekday work windows with a rest day; a
-term tracker and an archived term.
+activity (see _plan_history) and energy and stress set apart on days with
+the Work and COMM 103 tags (see Mood check-ins); per-weekday work windows
+with a rest day; a term tracker and an archived term.
 
 A fixed random seed keeps the sample the same for the same local date.
 seed_demo_data() first wipes every row the sandbox user owns, so reloading
@@ -19,7 +20,7 @@ the demo always starts from the same baseline.
 import math
 import random
 import statistics
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -119,7 +120,7 @@ def seed_demo_data(db: Session, user_id: str, local_date: str | None = None) -> 
     _seed_task_history(db, user_id, today, now, tags, rng, plan)
     _seed_habits(db, user_id, today, tags, rng, plan)
     _seed_notes(db, user_id, today, now, tags, rng, plan)
-    _seed_mood_checkins(db, user_id, today, plan)
+    _seed_mood_checkins(db, user_id, today, plan, _tag_days(db, user_id))
 
     db.commit()
 
@@ -405,9 +406,13 @@ _HISTORY_TEMPLATES = {
     "Personal": ("Laundry", "Call home", "Grocery run", "Pay rent", "Clean room"),
     "Health": ("Gym: upper body", "Meal prep", "Evening run"),
 }
+# Library shifts fall on Tuesdays and Thursdays and COMM 103 meets on Mondays
+# and Wednesdays, so a day's first finished task carries that tag, giving
+# Reports enough days with each to compare (see Mood check-ins).
+_WEEKDAY_TAGS = {0: "COMM 103", 1: "Work", 2: "COMM 103", 3: "Work"}
 # Class tags come up more often than the rest.
-_HISTORY_WEIGHTS = {"CS 460": 5, "MATH 254": 4, "PSY 101": 3, "COMM 103": 2, "ART 157": 2,
-                    "Work": 3, "Personal": 3, "Health": 2}
+_HISTORY_WEIGHTS = {"CS 460": 5, "MATH 254": 4, "PSY 101": 3, "COMM 103": 1, "ART 157": 2,
+                    "Work": 1, "Personal": 3, "Health": 2}
 
 
 def _seed_task_history(
@@ -421,8 +426,10 @@ def _seed_task_history(
     open_finished = _open_tasks_finished(today)
     for planned in plan:
         day = planned.day
-        for _ in range(planned.tasks - open_finished[day]):
+        for i in range(planned.tasks - open_finished[day]):
             tag = rng.choices(names, weights)[0]
+            if i == 0 and day.weekday() in _WEEKDAY_TAGS:
+                tag = _WEEKDAY_TAGS[day.weekday()]
             template = rng.choice(_HISTORY_TEMPLATES[tag])
             counters[template] = counters.get(template, 0) + 1
             finished = _at(day, rng.randint(16, 23), rng.choice((0, 15, 30, 45)), now)
@@ -549,6 +556,13 @@ def _seed_notes(
 
 
 # ── Mood check-ins ───────────────────────────────────────────────────────────
+# Reports › Mood › Patterns ("Tags & feelings") compares each day's energy and
+# stress on days a tag's tasks were finished or its notes edited with the days
+# without it. On days with Work energy drops to 2 (1 if it was low already)
+# and on days with COMM 103 stress climbs to 4 (5 if it was high already),
+# clear in a month as well as the year; the other tags leave the check-ins as
+# drawn. Mood is never changed, so "Mood & your activity" keeps the links
+# _plan_history draws.
 # Month words for the monthly check-ins, most recent first.
 _MONTH_WORDS = ("Steady", "Hectic", "Fresh start")
 # One per past week, most recent first.
@@ -577,8 +591,30 @@ _DAY_NOTES = (
 )
 
 
-def _seed_mood_checkins(db: Session, user_id: str, today: date, plan: list[_Day]) -> None:
-    """The planned daily check-ins, and every past week and month in the history.
+def _tag_days(db: Session, user_id: str) -> dict[date, set[str]]:
+    """The tags on each day's finished tasks and edited notes, by UTC day."""
+    days: dict[date, set[str]] = defaultdict(set)
+    finished = (
+        db.query(Task.completed_date, Tag.name)
+        .join(Task.tags)
+        .filter(Task.user_id == user_id, Task.completed_date.isnot(None))
+    )
+    edited = (
+        db.query(NoteSession.started_at, Tag.name)
+        .join(Note, Note.id == NoteSession.note_id)
+        .join(Note.tags)
+        .filter(NoteSession.user_id == user_id)
+    )
+    for at, name in [*finished, *edited]:
+        days[(at if at.tzinfo is None else at.astimezone(UTC)).date()].add(name)
+    return days
+
+
+def _seed_mood_checkins(
+    db: Session, user_id: str, today: date, plan: list[_Day], tag_days: dict[date, set[str]]
+) -> None:
+    """The planned daily check-ins, energy and stress set by the day's tags
+    where they call for it, and every past week and month in the history.
 
     Today, this week and this month are left open so the dashboard nudges
     still have something to ask. A fixed seed keeps the sample the same on
@@ -596,13 +632,20 @@ def _seed_mood_checkins(db: Session, user_id: str, today: date, plan: list[_Day]
             tags.append(rng.choice(("Tired", "Busy", "Anxious")))
         elif rng.random() < 0.3:
             tags.append(rng.choice(("Focused", "Busy", "Family")))
+        # Energy and stress follow mood halfway, so a tag's days stand out from the rest.
+        energy = min(5, max(1, round((mood + 3.5) / 2) + rng.choice((-1, 0, 0, 1))))
+        stress = min(5, max(1, round((8.5 - mood) / 2) + rng.choice((-1, 0, 1))))
+        if "Work" in tag_days.get(day, ()):
+            energy = 1 if energy <= 2 else 2
+        if "COMM 103" in tag_days.get(day, ()):
+            stress = 5 if stress >= 4 else 4
         db.add(MoodCheckin(
             user_id=user_id,
             period_kind="day",
             period_start=day,
             mood=mood,
-            energy=min(5, max(1, mood + rng.choice((-1, 0, 0, 1)))),
-            stress=min(5, max(1, 6 - mood + rng.choice((-1, 0, 1)))),
+            energy=energy,
+            stress=stress,
             note=rng.choice(_DAY_NOTES) if rng.random() < 0.15 else None,
             tags=list(dict.fromkeys(tags)),
         ))
