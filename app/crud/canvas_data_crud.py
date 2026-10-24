@@ -75,6 +75,8 @@ from app.schemas.canvas_schema import (
 # How long each kind of data counts as fresh.
 TTL = {
     "overview": timedelta(minutes=5),
+    # What the user checked off with "Mark as done" in the planner, for the linked-task sync.
+    "planner_overrides": timedelta(minutes=5),
     "announcements": timedelta(minutes=5),
     "courses": timedelta(minutes=15),
     "assignments": timedelta(minutes=15),
@@ -373,6 +375,28 @@ def fetch_courses(client: CanvasClient) -> list[CanvasCourse]:
     return [course for raw in courses if (course := _course(client.base_url, raw)) is not None]
 
 
+def fetch_marked_complete(client: CanvasClient) -> frozenset[int]:
+    """The ids of the assignments the user checked off with "Mark as done" in Canvas's planner.
+
+    A planner override names its assignment (a quiz's or graded discussion's
+    too) in assignment_id; an assignment's own override may only name it as
+    the plannable.
+    """
+    overrides = client.get_list("/planner/overrides", {"per_page": 100})
+    marked = set()
+    for raw in overrides:
+        if not isinstance(raw, dict) or raw.get("marked_complete") is not True:
+            continue
+        if raw.get("workflow_state") == "deleted":
+            continue
+        assignment_id = _int(raw.get("assignment_id"))
+        if assignment_id is None and raw.get("plannable_type") == "assignment":
+            assignment_id = _int(raw.get("plannable_id"))
+        if assignment_id is not None:
+            marked.add(assignment_id)
+    return frozenset(marked)
+
+
 def fetch_modules(course_id: int) -> Callable[[CanvasClient], list[CanvasModule]]:
     def fetch(client: CanvasClient) -> list[CanvasModule]:
         raw_modules = client.get_list(
@@ -550,6 +574,8 @@ def _planner_item(base_url: str, raw) -> CanvasItem | None:
         points_possible=_float(plannable.get("points_possible")),
         html_url=canvas_url(base_url, raw.get("html_url")),
         submission=_planner_submission(raw.get("submissions")),
+        marked_complete=isinstance(raw.get("planner_override"), dict)
+        and raw["planner_override"].get("marked_complete") is True,
     )
 
 

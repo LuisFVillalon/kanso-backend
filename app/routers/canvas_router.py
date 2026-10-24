@@ -5,7 +5,7 @@ GET    /canvas/connection       — the masked connection status and its capabil
 PUT    /canvas/connection       — connect, replace or reconnect: checks the token with Canvas, then stores it encrypted
 PUT    /canvas/connection/feed  — the same with a calendar feed link: fetches and parses it, then stores it encrypted
 POST   /canvas/connection/test  — re-checks the stored token with Canvas, or fetches the feed
-PATCH  /canvas/connection       — changes settings (the courses to hide)
+PATCH  /canvas/connection       — changes settings (the courses to hide, and auto_complete)
 DELETE /canvas/connection       — hard-deletes the connection and its token
 
 GET    /canvas/overview                        — due this week (or all upcoming), missing and recently graded work
@@ -14,7 +14,7 @@ GET    /canvas/courses                         — active courses with current g
 GET    /canvas/courses/{course_id}/modules     — a course's modules and their items
 GET    /canvas/courses/{course_id}/assignments — a course's assignments and quizzes, with the user's submissions
 GET    /canvas/announcements                   — the last 14 days of announcements
-POST   /canvas/linked-tasks/sync               — tasks added from Canvas: submitted yet, and due date changes
+POST   /canvas/linked-tasks/sync               — tasks added from Canvas: completed once done, due dates moved
 
 GET    /canvas/course-tags                     — each class's default tags for tasks added from it
 PUT    /canvas/course-tags/{course_id}         — sets (or clears) a class's default tags
@@ -222,8 +222,8 @@ def update_canvas_connection(
     current_user: UserInfo = Depends(_real_user),
     db: Session = Depends(get_db),
 ):
-    """Set the Canvas course ids hidden from the panel."""
-    row = update_connection(db, current_user.id, changes.hidden_course_ids)
+    """Set the Canvas course ids hidden from the panel, and whether the linked-task sync completes tasks."""
+    row = update_connection(db, current_user.id, changes.hidden_course_ids, changes.auto_complete)
     if row is None:
         raise _not_connected()
     return connection_out(row, datetime.now(UTC))
@@ -467,14 +467,14 @@ def sync_canvas_linked_tasks(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """For each open task added from Canvas: whether it's submitted, and its due date moved to Canvas's if changed.
+    """For each open task added from Canvas: whether it's done, and its due date moved to Canvas's if changed.
 
-    Tasks are never completed here; the frontend offers that when submitted is true.
+    A task whose assignment is done is completed here, unless the connection's auto_complete is off.
     """
     zone = require_time_zone(tz)
     now = datetime.now(UTC)
     if current_user.is_anonymous:
-        results = canvas_link_crud.sync_sample(db, current_user.id, zone, now.astimezone(zone).date())
+        results = canvas_link_crud.sync_sample(db, current_user.id, zone, now)
         return CanvasLinkedSyncOut(**_sample(), results=results)
     try:
         result = canvas_link_crud.sync(db, current_user.id, zone, now, refresh=refresh)

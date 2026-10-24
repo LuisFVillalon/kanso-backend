@@ -89,6 +89,7 @@ class CanvasAPI:
                 {"id": 202, "name": "Hidden course work", "due_at": PAST, "course_id": 12,
                  "submission_types": ["online_quiz"]},
             ]],
+            "/api/v1/planner/overrides": [[]],
             "/api/v1/courses": [COURSES],
             "/api/v1/courses/11/modules": [[
                 {"id": 1, "name": "Week 1", "position": 1, "state": "completed", "items": [
@@ -317,9 +318,12 @@ def test_overview_lists_the_next_week_and_missing_work(connected, canvas):
         "due_at": first["due_at"], "points_possible": 10.0, "html_url": f"{BASE_URL}/courses/11/assignments/101",
         "submission": {"submitted": False, "missing": False, "late": False, "graded": False, "excused": False,
                        "score": None, "grade": None, "submitted_at": None, "graded_at": None},
+        "marked_complete": False, "done": False, "done_reason": None,
     }
     assert body["upcoming"][1]["kind"] == "quiz"
     assert body["upcoming"][2]["submission"]["late"] is True
+    assert body["upcoming"][2]["done"] is True and body["upcoming"][2]["done_reason"] == "submitted"
+    assert all(item["done"] is False for item in body["missing"])
     assert [i["id"] for i in body["missing"]] == [201, 202]
     assert body["missing"][0]["course_name"] == "PSY 101"
     assert body["missing"][1]["kind"] == "quiz"
@@ -333,6 +337,32 @@ def test_overview_lists_the_next_week_and_missing_work(connected, canvas):
     assert datetime.fromisoformat(planner.url.params["end_date"]) == datetime.fromisoformat(body["end"])
     missing = next(r for r in canvas.requests if r.url.path.endswith("/missing_submissions"))
     assert missing.url.params.get_list("filter[]") == ["submittable", "current_grading_period"]
+
+
+
+def test_items_are_done_when_submitted_graded_excused_or_checked_off_in_canvas(connected, canvas):
+    canvas.lists["/api/v1/planner/items"] = [[
+        _planner(101, 11, "Not done", SOON),
+        _planner(102, 11, "Submitted", SOON, submissions={"submitted": True}),
+        _planner(103, 11, "Graded", SOON, submissions={"submitted": True, "graded": True}),
+        _planner(104, 11, "Excused", SOON, submissions={"excused": True, "graded": True}),
+        {**_planner(105, 11, "Checked off", SOON), "planner_override": {"marked_complete": True}},
+        {**_planner(106, 11, "Unchecked", SOON), "planner_override": {"marked_complete": False, "dismissed": True}},
+    ]]
+    body = connected.get("/canvas/overview", params={"tz": "America/Los_Angeles"}).json()
+    done = {item["title"]: (item["done"], item["done_reason"]) for item in body["upcoming"]}
+    assert done == {
+        "Not done": (False, None), "Submitted": (True, "submitted"), "Graded": (True, "graded"),
+        "Excused": (True, "excused"), "Checked off": (True, "marked_complete"), "Unchecked": (False, None),
+    }
+    checked = next(item for item in body["upcoming"] if item["title"] == "Checked off")
+    assert checked["marked_complete"] is True
+
+
+def test_a_courses_assignments_are_done_from_their_submissions(connected, canvas):
+    body = connected.get("/canvas/courses/11/assignments").json()
+    done = {a["id"]: (a["done"], a["done_reason"]) for a in body["assignments"]}
+    assert done == {301: (True, "graded"), 302: (False, None), 303: (False, None)}
 
 
 def _graded_last_week():

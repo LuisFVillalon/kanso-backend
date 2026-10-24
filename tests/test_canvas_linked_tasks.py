@@ -166,16 +166,170 @@ def test_a_task_reopened_with_its_assignment_free_keeps_its_link(client):
 
 # ── Sync ─────────────────────────────────────────────────────────────────────
 
-def test_sync_reports_submitted_assignments_without_completing_them(connected, db, canvas):
+def test_sync_completes_tasks_whose_assignment_is_done(connected, db, canvas):
     graded = _create(connected, title="Problem Set 5", **_link(301))
     open_ = _create(connected, title="Quiz 3", **_link(302))
     body = _sync(connected)
     results = _by_task(body)
     assert results[graded["id"]]["submitted"] is True and results[graded["id"]]["synced"] is True
-    assert results[open_["id"]]["submitted"] is False
+    assert (results[graded["id"]]["done"], results[graded["id"]]["done_reason"]) == (True, "graded")
+    assert results[graded["id"]]["completed"] is True
+    assert (results[open_["id"]]["submitted"], results[open_["id"]]["done"]) == (False, False)
+    assert results[open_["id"]]["completed"] is False
     assert body["sample"] is False and body["busy"] is False and body["stale"] is False
-    assert _task(db, graded["id"]).completed is False
-    assert canvas.paths() == ["/api/v1/courses/11/assignments"]
+    row = _task(db, graded["id"])
+    assert row.completed is True and row.completed_date is not None
+    assert row.canvas_completed_at is not None and row.completed_by_canvas is True
+    assert _task(db, open_["id"]).completed is False
+    assert canvas.paths() == ["/api/v1/courses/11/assignments", "/api/v1/planner/overrides"]
+
+
+def _assignment(canvas, assignment_id) -> dict:
+    return next(a for a in canvas.lists["/api/v1/courses/11/assignments"][0] if a["id"] == assignment_id)
+
+
+def _override(plannable_id, plannable_type="assignment", **fields):
+    """A planner override checking off the plannable; fields replace any of its values."""
+    return {
+        "id": 900 + plannable_id, "plannable_type": plannable_type, "plannable_id": plannable_id,
+        "assignment_id": plannable_id, "workflow_state": "active", "marked_complete": True, "dismissed": False,
+        **fields,
+    }
+
+
+def test_each_done_reason_completes_the_task(connected, db, canvas):
+    _assignment(canvas, 302)["submission"] = {"workflow_state": "submitted", "submitted_at": PAST}
+    _assignment(canvas, 303)["submission"] = {"workflow_state": "unsubmitted", "excused": True}
+    canvas.lists["/api/v1/courses/11/assignments"][0].append(
+        {"id": 304, "name": "Reading", "due_at": SOON, "submission_types": ["none"],
+         "submission": {"workflow_state": "unsubmitted"}},
+    )
+    canvas.lists["/api/v1/planner/overrides"] = [[_override(304)]]
+    tasks = {reason: _create(connected, **_link(assignment_id))
+             for reason, assignment_id in (("graded", 301), ("submitted", 302), ("excused", 303),
+                                           ("marked_complete", 304))}
+    results = _by_task(_sync(connected))
+    for reason, task in tasks.items():
+        result = results[task["id"]]
+        assert (result["done"], result["done_reason"], result["completed"]) == (True, reason, True), reason
+        assert _task(db, task["id"]).completed_by_canvas is True
+
+
+def test_a_quiz_checked_off_in_the_planner_is_matched_by_its_assignment_id(connected, db, canvas):
+    task = _create(connected, **_link(302))
+    # A classic quiz's override is on the quiz (quiz_id 9) and names its assignment.
+    canvas.lists["/api/v1/planner/overrides"] = [[_override(9, plannable_type="quiz", assignment_id=302)]]
+    result = _by_task(_sync(connected))[task["id"]]
+    assert (result["done_reason"], result["completed"]) == ("marked_complete", True)
+
+
+def test_an_assignment_override_without_assignment_id_matches_by_plannable(connected, canvas):
+    task = _create(connected, **_link(302))
+    canvas.lists["/api/v1/planner/overrides"] = [[_override(302, assignment_id=None)]]
+    assert _by_task(_sync(connected))[task["id"]]["done_reason"] == "marked_complete"
+
+
+def test_unchecked_deleted_or_other_overrides_are_not_done(connected, db, canvas):
+    task = _create(connected, **_link(302))
+    canvas.lists["/api/v1/planner/overrides"] = [[
+        _override(302, marked_complete=False, dismissed=True),
+        _override(302, workflow_state="deleted"),
+        _override(302, plannable_type="planner_note", assignment_id=None),
+    ]]
+    result = _by_task(_sync(connected))[task["id"]]
+    assert (result["done"], result["done_reason"], result["completed"]) == (False, None, False)
+    assert _task(db, task["id"]).completed is False
+
+
+def test_with_auto_complete_off_done_is_reported_but_the_task_stays_open(connected, db, canvas):
+    connected.patch("/canvas/connection", json={"hidden_course_ids": [12]})
+    response = connected.patch("/canvas/connection", json={"auto_complete": False})
+    assert response.status_code == 200
+    # Each setting is left alone when omitted.
+    assert response.json()["auto_complete"] is False and response.json()["hidden_course_ids"] == [12]
+    task = _create(connected, **_link(301))
+    result = _by_task(_sync(connected))[task["id"]]
+    assert (result["done"], result["done_reason"], result["completed"]) == (True, "graded", False)
+    row = _task(db, task["id"])
+    assert row.completed is False and row.canvas_completed_at is None
+
+    assert connected.patch("/canvas/connection", json={"auto_complete": True}).json()["auto_complete"] is True
+    assert _by_task(_sync(connected))[task["id"]]["completed"] is True
+
+
+def test_auto_complete_is_on_by_default(connected):
+    body = connected.get("/canvas/connection").json()
+    assert body["auto_complete"] is True and body["capabilities"]["done_status"] is True
+
+
+def test_a_completed_task_is_not_synced_again(connected, db, canvas):
+    task = _create(connected, **_link(301))
+    assert _by_task(_sync(connected))[task["id"]]["completed"] is True
+    stamp = _task(db, task["id"]).canvas_completed_at
+    canvas_cache.clear()
+    assert _sync(connected)["results"] == []
+    assert _task(db, task["id"]).canvas_completed_at == stamp
+
+
+def test_a_task_the_user_reopens_is_not_completed_again(connected, db, canvas):
+    task = _create(connected, **_link(301))
+    _sync(connected)
+    listed = next(t for t in connected.get("/get-tasks").json() if t["id"] == task["id"])
+    assert listed["completed_by_canvas"] is True and listed["canvas_completed_at"] is not None
+
+    reopened = connected.patch(f"/update-task-status/{task['id']}").json()
+    assert reopened["completed"] is False and reopened["completed_by_canvas"] is False
+    canvas_cache.clear()
+    result = _by_task(_sync(connected))[task["id"]]
+    assert (result["done"], result["completed"]) == (True, False)
+    assert _task(db, task["id"]).completed is False
+
+    # Completing it again by hand isn't Canvas's doing.
+    completed = connected.patch(f"/update-task-status/{task['id']}").json()
+    assert completed["completed"] is True and completed["completed_by_canvas"] is False
+
+
+def test_a_task_the_user_completed_is_left_alone(connected, db, canvas):
+    task = _create(connected, **_link(301))
+    connected.patch(f"/update-task-status/{task['id']}")
+    completed_date = _task(db, task["id"]).completed_date
+    assert _sync(connected)["results"] == []
+    row = _task(db, task["id"])
+    assert row.completed_date == completed_date and row.canvas_completed_at is None
+    assert row.completed_by_canvas is False
+
+
+def test_canvas_unmarking_an_item_leaves_its_completed_task_alone(connected, db, canvas):
+    task = _create(connected, **_link(302))
+    canvas.lists["/api/v1/planner/overrides"] = [[_override(302)]]
+    assert _by_task(_sync(connected))[task["id"]]["completed"] is True
+    canvas.lists["/api/v1/planner/overrides"] = [[_override(302, marked_complete=False)]]
+    canvas_cache.clear()
+    _sync(connected)
+    row = _task(db, task["id"])
+    assert row.completed is True and row.completed_by_canvas is True
+
+
+def test_relinking_a_task_clears_canvas_completed_at(connected, db, canvas):
+    task = _create(connected, **_link(301))
+    _sync(connected)
+    connected.patch(f"/update-task-status/{task['id']}")
+    assert _task(db, task["id"]).canvas_completed_at is not None
+    resp = connected.put(f"/update-task/{task['id']}", json={"title": "Task", **_link(302)})
+    assert resp.status_code == 200
+    assert _task(db, task["id"]).canvas_completed_at is None
+
+
+def test_overrides_canvas_cannot_serve_leave_done_to_submissions(connected, db, canvas):
+    graded = _create(connected, **_link(301))
+    checked = _create(connected, **_link(302))
+    canvas.lists["/api/v1/planner/overrides"] = [[_override(302)]]
+    canvas.respond = lambda request: httpx.Response(503) if request.url.path == "/api/v1/planner/overrides" else None
+    body = _sync(connected)
+    results = _by_task(body)
+    assert body["stale"] is True
+    assert results[graded["id"]]["completed"] is True
+    assert (results[checked["id"]]["synced"], results[checked["id"]]["done"]) == (True, False)
 
 
 def test_sync_moves_a_changed_due_date_in_the_callers_time_zone(connected, db, canvas):
@@ -264,7 +418,8 @@ def test_sync_uses_the_panels_cache(connected, canvas):
     assert connected.get("/canvas/courses/11/assignments").status_code == 200
     canvas.requests.clear()
     _sync(connected)
-    assert canvas.requests == []
+    # Only the planner overrides, which the panel doesn't read, come from Canvas.
+    assert canvas.paths() == ["/api/v1/planner/overrides"]
 
 
 def test_tasks_whose_assignment_cannot_be_read_are_left_alone(connected, db, canvas):
@@ -277,11 +432,14 @@ def test_tasks_whose_assignment_cannot_be_read_are_left_alone(connected, db, can
     results = _by_task(_sync(connected))
     for task in (gone, no_course, other_school, dropped):
         assert results[task["id"]] == {
-            "task_id": task["id"], "synced": False, "submitted": False, "due_at": None, "due_changed": False,
+            "task_id": task["id"], "synced": False, "submitted": False, "done": False, "done_reason": None,
+            "due_at": None, "due_changed": False, "completed": False,
         }
     assert _task(db, gone["id"]).due_date.date() == date(2026, 1, 1)
     # The dropped course's 404 doesn't fail the sync or the connection.
-    assert sorted(canvas.paths()) == ["/api/v1/courses/11/assignments", "/api/v1/courses/99/assignments"]
+    assert sorted(canvas.paths()) == [
+        "/api/v1/courses/11/assignments", "/api/v1/courses/99/assignments", "/api/v1/planner/overrides",
+    ]
     assert get_connection(db, USER_ID).status == "active"
 
 
@@ -291,7 +449,7 @@ def test_sync_reads_at_most_the_course_cap(connected, canvas, monkeypatch):
     second = _create(connected, **_link(1, course_id=12))
     results = _by_task(_sync(connected))
     assert results[first["id"]]["synced"] is True and results[second["id"]]["synced"] is False
-    assert canvas.paths() == ["/api/v1/courses/11/assignments"]
+    assert canvas.paths() == ["/api/v1/courses/11/assignments", "/api/v1/planner/overrides"]
 
 
 def test_only_open_tasks_are_synced(connected, canvas):
@@ -366,7 +524,10 @@ def test_demo_sandboxes_sync_against_sample_data_without_calling_canvas(demo_cli
     assert first["sample"] is True
     results = _by_task(first)
     assert results[submitted["id"]]["submitted"] is True
+    assert (results[submitted["id"]]["done_reason"], results[submitted["id"]]["completed"]) == ("submitted", True)
+    assert _task(db, submitted["id"]).completed_by_canvas is True
     assert results[upcoming["id"]]["submitted"] is False and results[upcoming["id"]]["due_changed"] is True
+    assert results[upcoming["id"]]["completed"] is False
     assert results[unknown["id"]]["synced"] is False
 
     today = datetime.now(LA).date()

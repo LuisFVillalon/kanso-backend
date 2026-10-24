@@ -86,6 +86,7 @@ def _drop_taken_canvas_link(db: Session, user_id: str, task: TaskModel) -> None:
         task.canvas_due_at = None
         task.canvas_due_date = None
         task.canvas_due_source = None
+        task.canvas_completed_at = None
 
 
 def _canvas_source(db: Session, user_id: str) -> str:
@@ -319,6 +320,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
         db_task.canvas_due_at = task.canvas_due_at if assignment_id is not None else None
         db_task.canvas_due_date = task.canvas_due_date if assignment_id is not None else None
         db_task.canvas_due_source = _canvas_source(db, user_id) if assignment_id is not None else None
+        db_task.canvas_completed_at = None
 
     # Only a changed link is checked, so re-saving a task under its current
     # parent never trips the loop or archive checks.

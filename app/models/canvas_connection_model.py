@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, BigInteger, Column, DateTime, LargeBinary, SmallInteger, String, Text, func, text
+from sqlalchemy import JSON, BigInteger, Boolean, Column, DateTime, LargeBinary, SmallInteger, String, Text, func, text
 
 from app.database.database import Base
 
@@ -42,6 +42,9 @@ class CanvasConnection(Base):
     hidden_course_ids = Column(JSON, nullable=False, default=list)
     # Each class's default tags for tasks added from it: {"<Canvas course id>": [tag id, ...]}.
     course_tag_ids = Column(JSON, nullable=False, default=dict, server_default=text("'{}'::json"))
+    # The linked-task sync completes a task once its Canvas item is done
+    # (crud/canvas_link_crud.py).
+    auto_complete = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     last_synced_at = Column(DateTime(timezone=True), nullable=True)
