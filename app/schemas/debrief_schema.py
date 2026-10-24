@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.schemas.event_schema import EventOccurrence, EventTagMinutes
 from app.schemas.tag_schema import VisibleTags
 
 
@@ -42,8 +43,18 @@ class DebriefNoteItem(BaseModel):
 
 class WorkloadCapacity(BaseModel):
     is_rest_day: bool = False
+    # Today's work window, from the profile; null if it has no day start and
+    # "Call it a day" set.
+    window_minutes: float | None = None
+    # Minutes of the window today's events take, overlaps counted once.
+    # Archived and all-day events take none.
+    event_minutes: float = 0
+    # What's left of the window for tasks: window_minutes - event_minutes.
     available_minutes: float | None = None
+    # Estimated minutes of open tasks due today.
     committed_minutes: float = 0
+    # available_minutes - committed_minutes, at least 0.
+    free_minutes: float | None = None
     utilization_pct: float | None = None
     is_overcommitted: bool = False
 
@@ -68,5 +79,16 @@ class DailyDebriefReport(BaseModel):
     habit_status: list[HabitDebriefStatus] = []
     workload: WorkloadCapacity
     focus_next: list[FocusNextItem] = []
+    # Today's event occurrences in start order, as the calendar shows them
+    # (past archived ones included and flagged).
+    events_today: list[EventOccurrence] = []
+    # The ones that have ended by local_time, archived ones left out: today's
+    # activity. Empty without local_time.
+    passed_events_today: list[EventOccurrence] = []
+    # Today's event minutes per tag, for the time allocation bar, and the
+    # same for the passed ones, for the activity log. Archived events are
+    # left out of both.
+    event_minutes_by_tag: list[EventTagMinutes] = []
+    passed_event_minutes_by_tag: list[EventTagMinutes] = []
 
     model_config = {"from_attributes": True}

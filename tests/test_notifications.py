@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.crud.notification_crud import get_notifications, prune_states, update_preferences
+from app.models.event_model import Event, EventException
 from app.models.habit_model import Habit
 from app.models.mood_checkin_model import MoodCheckin
 from app.models.notification_model import NotificationState
@@ -114,6 +115,70 @@ def test_moving_a_due_time_makes_a_new_occurrence(db):
     current = _ids(db, _utc(DAY, 16, 0))
     assert f"task_reminder:task-{task.id}:2026-10-20T18:00" in current
     assert f"task_reminder:task-{task.id}:2026-10-20T16:00" not in current
+
+
+# ── Event reminders ──────────────────────────────────────────────────────────
+
+def _event(db, title, day: date, at: time, until: time, user_id=USER_ID, **fields) -> Event:
+    event = Event(
+        title=title, user_id=user_id, start_date=day, start_time=at, end_time=until, time_zone="UTC",
+        all_day=False, **{"repeat_days": [], "repeat_interval": 1, **fields},
+    )
+    db.add(event)
+    db.flush()
+    return event
+
+
+@pytest.mark.usefixtures("without_mood_alerts")
+def test_event_reminder_fires_its_lead_before_each_occurrence_until_it_starts(db):
+    event = _event(db, "CS 460", DAY, time(16, 0), time(17, 0), reminder_minutes=30, repeat_days=[2, 4])
+    _event(db, "No reminder", DAY, time(16, 0), time(17, 0))
+    _event(db, "Archived", DAY, time(16, 0), time(17, 0), reminder_minutes=30, archived_at=datetime.now(UTC))
+    _event(db, "Deleted", DAY, time(16, 0), time(17, 0), reminder_minutes=30, deleted_at=datetime.now(UTC))
+    _event(db, "Someone else's", DAY, time(16, 0), time(17, 0), reminder_minutes=30, user_id=OTHER_USER_ID)
+    reminder = f"event_reminder:event-{event.id}:2026-10-20T16:00"
+
+    assert _ids(db, _utc(DAY, 15, 29)) == []
+    current = _by_id(db, _utc(DAY, 15, 30))
+    assert list(current) == [reminder]
+    assert current[reminder].title == "CS 460 starts in 30 minutes"
+    assert current[reminder].body == "Starts today at 4:00 PM."
+    assert (current[reminder].event_ids, current[reminder].dates) == ([event.id], [DAY])
+    assert _ids(db, _utc(DAY, 16, 0)) == []
+    # Thursday's occurrence has its own reminder.
+    thursday = DAY + timedelta(days=2)
+    assert _ids(db, _utc(thursday, 15, 45)) == [f"event_reminder:event-{event.id}:2026-10-22T16:00"]
+
+
+@pytest.mark.usefixtures("without_mood_alerts")
+def test_event_reminder_skips_an_archived_occurrence_and_follows_a_moved_one(db):
+    event = _event(db, "CS 460", DAY, time(16, 0), time(17, 0), reminder_minutes=30, repeat_days=[2, 4])
+    thursday = DAY + timedelta(days=2)
+    db.add_all([
+        EventException(event_id=event.id, occurrence_date=DAY, archived_at=datetime.now(UTC)),
+        EventException(event_id=event.id, occurrence_date=thursday, start_time=time(18, 0)),
+    ])
+    db.flush()
+    assert _ids(db, _utc(DAY, 15, 45)) == []
+    assert _ids(db, _utc(thursday, 15, 45)) == []
+    assert _ids(db, _utc(thursday, 17, 45)) == [f"event_reminder:event-{event.id}:2026-10-22T18:00"]
+
+
+@pytest.mark.usefixtures("without_mood_alerts")
+def test_event_reminder_at_the_start_lasts_until_the_event_ends(db):
+    event = _event(db, "Standup", DAY, time(9, 0), time(9, 15), reminder_minutes=0)
+    reminder = f"event_reminder:event-{event.id}:2026-10-20T09:00"
+    assert _ids(db, _utc(DAY, 8, 59)) == []
+    current = _by_id(db, _utc(DAY, 9, 5))
+    assert (current[reminder].title, current[reminder].body) == ("Standup is starting", "Started today at 9:00 AM.")
+    assert _ids(db, _utc(DAY, 9, 15)) == []
+
+
+@pytest.mark.usefixtures("without_mood_alerts")
+def test_event_reminders_can_be_switched_off(db):
+    _event(db, "CS 460", DAY, time(16, 0), time(17, 0), reminder_minutes=30)
+    update_preferences(db, USER_ID, {"types": {"event_reminder": False}})
+    assert _ids(db, _utc(DAY, 15, 45)) == []
 
 
 # ── Retired types ────────────────────────────────────────────────────────────
@@ -349,7 +414,7 @@ def test_preferences_default_to_everything_on(client):
     resp = client.get("/get-notification-preferences")
     assert resp.status_code == 200
     assert resp.json() == {
-        "types": {"task_reminder": True, "mood_reminder": True, "mood_missed": True},
+        "types": {"task_reminder": True, "mood_reminder": True, "mood_missed": True, "event_reminder": True},
         "quiet_hours_start": None,
         "quiet_hours_end": None,
         "default_reminder_minutes": 120,
@@ -407,7 +472,7 @@ def test_retired_types_are_accepted_and_ignored(client, db):
         json={"types": {"overdue": False, "due_today": True, "final_warning": False}},
     )
     assert resp.status_code == 200
-    assert set(resp.json()["types"]) == {"task_reminder", "mood_reminder", "mood_missed"}
+    assert set(resp.json()["types"]) == {"task_reminder", "mood_reminder", "mood_missed", "event_reminder"}
     assert client.get("/get-notification-preferences").json() == resp.json()
     # Read and dismissed state from older clients is still taken.
     retired_ids = (

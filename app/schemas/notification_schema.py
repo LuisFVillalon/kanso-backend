@@ -9,7 +9,7 @@ from app.schemas.limits import NOTIFICATION_IDS_MAX, REMINDER_MINUTES_MAX
 
 # Every alert type. A new one (Canvas alerts) is added here; stored
 # preferences only hold overrides, so existing rows need no migration.
-NotificationType = Literal["task_reminder", "mood_reminder", "mood_missed"]
+NotificationType = Literal["task_reminder", "mood_reminder", "mood_missed", "event_reminder"]
 NOTIFICATION_TYPES: tuple[str, ...] = get_args(NotificationType)
 # Types no longer generated. Older clients may still send them as switches or
 # ids, which are accepted and ignored.
@@ -17,7 +17,8 @@ RetiredNotificationType = Literal["due_today", "overdue", "habit_reminder", "fin
 RETIRED_NOTIFICATION_TYPES: tuple[str, ...] = get_args(RetiredNotificationType)
 
 # "{type}:{subject}:{occurrence}", where the occurrence starts with its local
-# date, e.g. "mood_missed:mood:2026-10-20" or "task_reminder:task-12:2026-10-20T16:00".
+# date, e.g. "mood_missed:mood:2026-10-20", "task_reminder:task-12:2026-10-20T16:00"
+# or "event_reminder:event-7:2026-10-20T09:00".
 _ID_PATTERN = re.compile(
     r"(?P<type>[a-z_]+):(?P<subject>[a-z]+(?:-\d+)?):(?P<day>\d{4}-\d{2}-\d{2})(?:T(?:[01]\d|2[0-3]):[0-5]\d)?"
 )
@@ -56,6 +57,8 @@ class Notification(BaseModel):
     # about habits, and is kept for older clients.
     task_ids: list[int] = []
     habit_ids: list[int] = []
+    # The event an event_reminder is about; its dates hold the occurrence_date.
+    event_ids: list[int] = []
     # The local days a mood check-in is due or missing for.
     dates: list[date] = []
     read: bool = False

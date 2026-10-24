@@ -1,10 +1,14 @@
-from datetime import date
+from datetime import date, time
 
 from sqlalchemy.orm import Session
 
 from app.models.profile_model import Profile
 from app.schemas.mood_schema import merge_mood_settings
 from app.schemas.profile_schema import ProfileSave
+
+# The frontend's defaults for a profile without these times set.
+DEFAULT_DAY_START = time(8, 0)
+DEFAULT_SHUTOFF = time(22, 0)
 
 
 def get_profile(db: Session, user_id: str) -> Profile | None:
@@ -19,6 +23,24 @@ def day_window(profile: Profile | None, day: date) -> tuple[str | None, str | No
     if window:
         return window["start"], window["end"]
     return (profile.day_start_time, profile.shutoff_time) if profile else (None, None)
+
+
+def parse_hhmm(value: str | None, default: time | None = None) -> time | None:
+    """Parse a stored "HH:MM" local time, falling back to default if missing or malformed."""
+    if not value:
+        return default
+    try:
+        hour, minute = (int(part) for part in value.split(":"))
+        return time(hour, minute)
+    except ValueError:
+        return default
+
+
+def work_window(profile: Profile | None, day: date) -> tuple[time, time]:
+    """`day`'s (day start, "Call it a day") local times, with the defaults for any unset.
+    An end at or before the start falls after midnight."""
+    start, end = day_window(profile, day)
+    return parse_hhmm(start, DEFAULT_DAY_START), parse_hhmm(end, DEFAULT_SHUTOFF)
 
 
 def upsert_profile(db: Session, user_id: str, body: ProfileSave) -> Profile:

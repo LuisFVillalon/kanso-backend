@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
+from app.crud.event_occurrence_crud import get_occurrences
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
 from app.models.note_model import Note as NoteModel
@@ -29,9 +30,13 @@ def get_calendar_activity(
 ) -> CalendarActivity:
     """Everything the user planned or did across local days start..end inclusive:
     tasks due in the range, tasks completed in it, note editing sessions and
-    habit completions, plus the notes and habits behind those with their tags.
-    Deleted tasks, notes and habits are left out, and so are archived ones
-    unless `include_archived` is set.
+    habit completions, plus the notes and habits behind those with their tags,
+    and the event occurrences on those days. Deleted tasks, notes and habits
+    are left out, and so are archived ones unless `include_archived` is set.
+
+    Events follow the calendar's own rule whatever `include_archived` says:
+    past occurrences are in, archived ones too (flagged), and upcoming
+    archived ones are out (see event_occurrence_crud).
 
     Due dates and habit log dates are already local calendar dates. Completion
     and session timestamps are UTC, so they are matched against the UTC
@@ -134,4 +139,5 @@ def get_calendar_activity(
         ],
         notes=[ActivityNote.model_validate(n) for n in notes],
         habits=[ActivityHabit.model_validate(h) for h in habits],
+        events=get_occurrences(db, user_id, start, end, tz, datetime.now(UTC)),
     )
