@@ -13,7 +13,7 @@ the Work and COMM 103 tags (see Mood check-ins); per-weekday work windows
 with a rest day; a term tracker and an archived term; and calendar events
 across the history and a few weeks ahead: classes repeating through the
 term, open-ended weekly and every-other-week series, one-offs (an all-day
-and an overnight one among them), a cancelled and an edited occurrence, and
+and an overnight one among them), a cancelled and two edited occurrences, and
 archived events (see Events).
 
 A fixed random seed keeps the sample the same for the same local date.
@@ -49,7 +49,7 @@ from app.models.task_model import Task
 # daily mood check-ins all reach this far back.
 HISTORY_DAYS = 90
 
-# The demo's events are at these wall times when the caller sends no zone.
+# The demo's events are at their wall times in this zone.
 DEFAULT_TIME_ZONE = "America/Los_Angeles"
 
 # The class tags match the sample Canvas courses (crud/canvas_sample.py).
@@ -88,12 +88,9 @@ def _at(day: date, hour: int, minute: int, now: datetime) -> datetime:
     return min(datetime.combine(day, time(hour, minute), tzinfo=UTC), now - timedelta(hours=1))
 
 
-def seed_demo_data(
-    db: Session, user_id: str, local_date: str | None = None, time_zone: str = DEFAULT_TIME_ZONE
-) -> None:
+def seed_demo_data(db: Session, user_id: str, local_date: str | None = None) -> None:
     """Wipe and repopulate a demo sandbox with sample data dated relative to
-    the caller's local date (server date if omitted), its events at wall times
-    in the caller's IANA time_zone."""
+    the caller's local date (server date if omitted)."""
     delete_user_rows(db, user_id)
 
     today = resolve_today(local_date)
@@ -132,7 +129,7 @@ def seed_demo_data(
     _seed_task_history(db, user_id, today, now, tags, rng, plan)
     _seed_habits(db, user_id, today, tags, rng, plan)
     _seed_notes(db, user_id, today, now, tags, rng, plan)
-    _seed_events(db, user_id, today, now, tags, time_zone, term.end_date)
+    _seed_events(db, user_id, today, now, tags, term.end_date)
     _seed_mood_checkins(db, user_id, today, plan, _tag_days(db, user_id))
 
     db.commit()
@@ -590,7 +587,6 @@ _SERIES = [
 # One-off events: (title, tag, days from today, start, end (None all day;
 # before start runs past midnight), reminder minutes, archived, description)
 _ONE_OFF_EVENTS = [
-    ("MATH 254 Midterm", "MATH 254", -18, time(13, 0), time(14, 50), None, False, "Room 107, bring a calculator."),
     ("CS 460 Hackathon", "CS 460", -25, time(20, 0), time(2, 0), None, False, "Overnight in the CS lab."),
     ("COMM 103 Speech practice", "COMM 103", -30, time(15, 0), time(16, 0), None, True, None),
     ("PSY 101 Study group", "PSY 101", -5, time(18, 0), time(19, 30), None, False, "Library room 3B."),
@@ -608,10 +604,10 @@ def _first_on(day: date, weekdays: list[int]) -> date:
 
 
 def _seed_events(
-    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], time_zone: str, term_end: date
+    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], term_end: date
 ) -> None:
-    """The repeating series and one-off events, a cancelled lecture and an
-    edited one, and an archived event on either side of today."""
+    """The repeating series and one-off events, a cancelled lecture and
+    lectures turned into midterms, and an archived event on either side of today."""
     series: dict[str, Event] = {}
     for title, tag, weekdays, interval, start, end, first, last, reminder in _SERIES:
         event = Event(
@@ -621,7 +617,7 @@ def _seed_events(
             end_date=term_end if last == "term" else None if last is None else today + timedelta(days=last),
             start_time=start,
             end_time=end,
-            time_zone=time_zone,
+            time_zone=DEFAULT_TIME_ZONE,
             repeat_days=weekdays,
             repeat_interval=interval,
             reminder_minutes=reminder,
@@ -637,7 +633,7 @@ def _seed_events(
             start_date=today + timedelta(days=offset),
             start_time=None if end is None else start,
             end_time=end,
-            time_zone=time_zone,
+            time_zone=DEFAULT_TIME_ZONE,
             repeat_days=[],
             reminder_minutes=reminder,
             archived_at=now if archived else None,
@@ -646,7 +642,7 @@ def _seed_events(
         series[title] = event
     db.add_all(series.values())
 
-    # A lecture cancelled last week, and next week's PSY 101 lecture turned into the midterm.
+    # A lecture cancelled last week, and lectures turned into midterms before and after today.
     series["CS 460 Lecture"].exceptions.append(
         EventException(occurrence_date=_first_on(today - timedelta(days=7), [3]), cancelled=True)
     )
@@ -655,6 +651,12 @@ def _seed_events(
         title="PSY 101 Midterm",
         description="Chapters 1-8. Bring a #2 pencil.",
         end_time=time(14, 30),
+    ))
+    series["MATH 254 Lecture"].exceptions.append(EventException(
+        occurrence_date=_first_on(today - timedelta(days=18), [3]),
+        title="MATH 254 Midterm",
+        description="Room 107, bring a calculator.",
+        end_time=time(14, 50),
     ))
     db.flush()
 

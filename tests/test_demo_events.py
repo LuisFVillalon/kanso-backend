@@ -3,9 +3,6 @@
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi.testclient import TestClient
-
-from app.core.auth import UserInfo, get_current_user
 from app.crud.demo_crud import _TAGS, DEFAULT_TIME_ZONE, HISTORY_DAYS, seed_demo_data
 from app.crud.event_crud import get_events
 from app.crud.event_occurrence_crud import (
@@ -18,8 +15,6 @@ from app.crud.event_occurrence_crud import (
     window_span,
 )
 from app.crud.profile_crud import get_profile, work_window
-from app.database.database import get_db
-from app.main import app
 from app.models.calendar_settings_model import CalendarSettings
 from app.models.event_model import Event
 from tests.conftest import USER_ID
@@ -29,8 +24,8 @@ ZONE = ZoneInfo(DEFAULT_TIME_ZONE)
 CLASS_TAGS = {"CS 460", "MATH 254", "PSY 101", "COMM 103", "ART 157"}
 
 
-def _seed(db, **kwargs):
-    seed_demo_data(db, USER_ID, local_date=TODAY.isoformat(), **kwargs)
+def _seed(db):
+    seed_demo_data(db, USER_ID, local_date=TODAY.isoformat())
 
 
 def _series(db) -> dict[str, Event]:
@@ -109,6 +104,9 @@ def test_occurrences_cover_the_history_and_three_weeks_ahead(db):
     assert len(midterm) == 1 and midterm[0].day > TODAY and midterm[0].edited
     assert midterm[0].end_time == time(14, 30)
     assert "PSY 101 Lecture" in by_title
+    math_midterm = by_title["MATH 254 Midterm"]
+    assert len(math_midterm) == 1 and math_midterm[0].day < TODAY and math_midterm[0].edited
+    assert math_midterm[0].day not in {occ.day for occ in by_title["MATH 254 Lecture"]}
 
     hackathon = by_title["CS 460 Hackathon"][0]
     assert hackathon.ends_at.astimezone(ZONE).date() == hackathon.day + timedelta(days=1)
@@ -164,19 +162,3 @@ def test_seeding_twice_gives_the_same_events(db):
     _seed(db)
     assert snapshot() == first
 
-
-def test_the_seed_endpoint_puts_events_in_the_callers_zone(db):
-    app.dependency_overrides[get_db] = lambda: db
-    app.dependency_overrides[get_current_user] = lambda: UserInfo(
-        id=USER_ID, email="", provider="anonymous", is_anonymous=True
-    )
-    try:
-        client = TestClient(app)
-        params = {"local_date": TODAY.isoformat()}
-        assert client.post("/demo/seed", params={**params, "tz": "Mars/Olympus"}).status_code == 422
-        assert client.post("/demo/seed", params={**params, "tz": "America/New_York"}).status_code == 204
-        assert {e.time_zone for e in _series(db).values()} == {"America/New_York"}
-        assert client.post("/demo/seed", params=params).status_code == 204
-        assert {e.time_zone for e in _series(db).values()} == {DEFAULT_TIME_ZONE}
-    finally:
-        app.dependency_overrides.clear()
