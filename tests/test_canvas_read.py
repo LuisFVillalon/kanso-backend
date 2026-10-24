@@ -223,6 +223,14 @@ def test_get_list_stops_at_the_page_cap(canvas, monkeypatch):
     assert len(canvas.requests) == 3
 
 
+def test_get_pages_says_whether_the_page_cap_cut_the_list_short(canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "MAX_PAGES", 3)
+    canvas.lists["/api/v1/courses"] = [[{"id": n}] for n in range(3)]
+    assert CanvasClient(BASE_URL, TOKEN).get_pages("/courses") == ([{"id": 0}, {"id": 1}, {"id": 2}], True)
+    canvas.lists["/api/v1/courses"].append([{"id": 3}])
+    assert CanvasClient(BASE_URL, TOKEN).get_pages("/courses") == ([{"id": 0}, {"id": 1}, {"id": 2}], False)
+
+
 def test_link_headers_are_read_case_insensitively(canvas):
     def respond(request):
         if request.url.params.get("page") == "2":
@@ -363,6 +371,60 @@ def test_a_courses_assignments_are_done_from_their_submissions(connected, canvas
     body = connected.get("/canvas/courses/11/assignments").json()
     done = {a["id"]: (a["done"], a["done_reason"]) for a in body["assignments"]}
     assert done == {301: (True, "graded"), 302: (False, None), 303: (False, None)}
+
+
+def _checked_off(assignment_id):
+    return {"id": 900 + assignment_id, "plannable_type": "assignment", "plannable_id": assignment_id,
+            "assignment_id": assignment_id, "workflow_state": "active", "marked_complete": True}
+
+
+def test_work_canvas_graded_as_missing_is_not_done(connected, canvas):
+    canvas.lists["/api/v1/planner/items"] = [[
+        _planner(101, 11, "Zero for missing", SOON, submissions={"graded": True, "missing": True}),
+        _planner(102, 11, "Graded late", SOON, submissions={"graded": True, "missing": True, "submitted": True}),
+    ]]
+    canvas.lists["/api/v1/courses/11/assignments"][0][1]["submission"] = {
+        "workflow_state": "graded", "missing": True, "score": 0, "grade": "0",
+    }
+    upcoming = connected.get("/canvas/overview").json()["upcoming"]
+    assert {i["title"]: (i["done"], i["done_reason"]) for i in upcoming} == {
+        "Zero for missing": (False, None), "Graded late": (True, "graded"),
+    }
+    quiz3 = connected.get("/canvas/courses/11/assignments").json()["assignments"][1]
+    assert quiz3["submission"]["graded"] is True
+    assert (quiz3["done"], quiz3["done_reason"]) == (False, None)
+
+
+def test_assignments_and_missing_work_checked_off_in_canvas_are_done(connected, canvas):
+    canvas.lists["/api/v1/planner/overrides"] = [[_checked_off(302), _checked_off(201)]]
+    body = connected.get("/canvas/courses/11/assignments").json()
+    assert body["stale"] is False
+    done = {a["id"]: (a["done"], a["done_reason"]) for a in body["assignments"]}
+    assert done == {301: (True, "graded"), 302: (True, "marked_complete"), 303: (False, None)}
+    overview = connected.get("/canvas/overview").json()
+    assert overview["stale"] is False
+    missing = {i["id"]: (i["done"], i["done_reason"], i["marked_complete"]) for i in overview["missing"]}
+    assert missing == {201: (True, "marked_complete", True), 202: (False, None, False)}
+    assert canvas.paths().count("/api/v1/planner/overrides") == 1
+
+
+def test_overrides_canvas_cannot_serve_leave_the_data_stale_without_checkmarks(connected, canvas):
+    canvas.lists["/api/v1/planner/overrides"] = [[_checked_off(302), _checked_off(201)]]
+    canvas.respond = lambda request: httpx.Response(503) if request.url.path == "/api/v1/planner/overrides" else None
+    body = connected.get("/canvas/courses/11/assignments").json()
+    assert body["stale"] is True and body["busy"] is False
+    assert [a["marked_complete"] for a in body["assignments"]] == [False, False, False]
+    overview = connected.get("/canvas/overview").json()
+    assert overview["stale"] is True
+    assert [i["done"] for i in overview["missing"]] == [False, False]
+
+
+def test_overrides_cut_off_at_the_page_cap_leave_the_assignments_stale(connected, canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "MAX_PAGES", 1)
+    canvas.lists["/api/v1/planner/overrides"] = [[_checked_off(302)], [_checked_off(303)]]
+    body = connected.get("/canvas/courses/11/assignments").json()
+    assert body["stale"] is True
+    assert [a["marked_complete"] for a in body["assignments"]] == [False, True, False]
 
 
 def _graded_last_week():

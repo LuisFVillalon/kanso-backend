@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.core import canvas_cache
+from app.core import canvas_cache, canvas_client
 from app.crud import canvas_link_crud, canvas_sample
 from app.crud.canvas_crud import get_connection
 from app.models.task_model import Task
@@ -332,6 +332,26 @@ def test_overrides_canvas_cannot_serve_leave_done_to_submissions(connected, db, 
     assert (results[checked["id"]]["synced"], results[checked["id"]]["done"]) == (True, False)
 
 
+def test_overrides_cut_off_at_the_page_cap_are_stale(connected, canvas, monkeypatch):
+    monkeypatch.setattr(canvas_client, "MAX_PAGES", 1)
+    first = _create(connected, **_link(302))
+    later = _create(connected, **_link(303))
+    canvas.lists["/api/v1/planner/overrides"] = [[_override(302)], [_override(303)]]
+    body = _sync(connected)
+    results = _by_task(body)
+    assert body["stale"] is True and body["busy"] is False
+    assert results[first["id"]]["completed"] is True
+    assert (results[later["id"]]["done"], results[later["id"]]["completed"]) == (False, False)
+
+
+def test_a_missing_assignment_canvas_graded_does_not_complete_its_task(connected, db, canvas):
+    _assignment(canvas, 302)["submission"] = {"workflow_state": "graded", "missing": True, "score": 0, "grade": "0"}
+    task = _create(connected, **_link(302))
+    result = _by_task(_sync(connected))[task["id"]]
+    assert (result["done"], result["done_reason"], result["completed"]) == (False, None, False)
+    assert _task(db, task["id"]).completed is False
+
+
 def test_sync_moves_a_changed_due_date_in_the_callers_time_zone(connected, db, canvas):
     task = _create(connected, **_link(302), due_date="2026-01-01", due_time="09:00:00")
     result = _by_task(_sync(connected))[task["id"]]
@@ -418,8 +438,8 @@ def test_sync_uses_the_panels_cache(connected, canvas):
     assert connected.get("/canvas/courses/11/assignments").status_code == 200
     canvas.requests.clear()
     _sync(connected)
-    # Only the planner overrides, which the panel doesn't read, come from Canvas.
-    assert canvas.paths() == ["/api/v1/planner/overrides"]
+    # The panel's assignments read the planner overrides too.
+    assert canvas.paths() == []
 
 
 def test_tasks_whose_assignment_cannot_be_read_are_left_alone(connected, db, canvas):

@@ -116,9 +116,12 @@ class CanvasSubmission(BaseModel):
 
 def done_reason(submission: CanvasSubmission | None, marked_complete: bool) -> CanvasDoneReason | None:
     if submission is not None:
-        for reason in ("excused", "graded", "submitted"):
-            if getattr(submission, reason):
-                return reason
+        if submission.excused:
+            return "excused"
+        if submission.graded and (submission.submitted or not submission.missing):
+            return "graded"
+        if submission.submitted:
+            return "submitted"
     return "marked_complete" if marked_complete else None
 
 
@@ -134,8 +137,7 @@ class CanvasItem(BaseModel):
     points_possible: float | None = None
     html_url: str | None = None
     submission: CanvasSubmission | None = None
-    # Checked off with "Mark as done" in Canvas's planner; a token's planner
-    # and the linked-task sync only.
+    # Checked off with "Mark as done" in Canvas's planner; a token's only.
     marked_complete: bool = False
 
     @computed_field

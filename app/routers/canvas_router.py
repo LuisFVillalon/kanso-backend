@@ -26,7 +26,10 @@ announcements answer 404 canvas_not_supported for it; GET /canvas/connection
 says which type is connected and what it can show.
 
 The read routes proxy Canvas through a short cache (crud/canvas_data_crud.py)
-and return fetched_at, busy and stale with the data. Demo sandboxes get
+and return fetched_at, busy and stale with the data. A course's assignments
+and the overview's missing work are marked with what the user checked off in
+Canvas's planner (its planner overrides); overrides Canvas can't serve, or that
+run past the page cap, leave that out, with stale set. Demo sandboxes get
 read-only sample data from them (crud/canvas_sample.py), with sample=true and
 no Canvas call, so the panel can be shown off. The linked-task sync
 (crud/canvas_link_crud.py) reads assignments the same way, and syncs demo
@@ -276,6 +279,23 @@ def _freshness(result: canvas_data_crud.Read) -> dict:
     return {"fetched_at": result.fetched_at, "busy": result.busy, "stale": result.stale}
 
 
+def _marked_complete(
+    db: Session, current_user: UserInfo, result: canvas_data_crud.Read, items: list, refresh: bool
+) -> tuple[list, dict]:
+    """items with marked_complete from the planner overrides, and the freshness of result and the overrides together."""
+    if not items:
+        return items, _freshness(result)
+    try:
+        overrides = canvas_data_crud.read_marked_complete(db, current_user.id, datetime.now(UTC), refresh)
+    except (CanvasError, crypto.EncryptionKeyError) as exc:
+        raise _read_http_error(exc) from None
+    return canvas_data_crud.with_marked_complete(items, overrides.data), {
+        "fetched_at": min(result.fetched_at, overrides.fetched_at),
+        "busy": result.busy or overrides.busy,
+        "stale": result.stale or overrides.stale,
+    }
+
+
 def _sample() -> dict:
     return {"fetched_at": datetime.now(UTC), "sample": True}
 
@@ -318,7 +338,8 @@ def read_canvas_overview(
     )
     shown = {key: [item for item in items if item.course_id not in result.hidden_course_ids]
              for key, items in result.data.items()}
-    return CanvasOverviewOut(**_freshness(result), **window, **shown)
+    shown["missing"], freshness = _marked_complete(db, current_user, result, shown["missing"], refresh)
+    return CanvasOverviewOut(**freshness, **window, **shown)
 
 
 @router.get("/classes", response_model=CanvasClassesOut)
@@ -431,7 +452,8 @@ def read_canvas_assignments(
         db, current_user, "assignments", (course_id,), canvas_data_crud.fetch_assignments(course_id),
         refresh=refresh, course_id=course_id,
     )
-    return CanvasAssignmentsOut(**_freshness(result), course_id=course_id, assignments=result.data)
+    assignments, freshness = _marked_complete(db, current_user, result, result.data, refresh)
+    return CanvasAssignmentsOut(**freshness, course_id=course_id, assignments=assignments)
 
 
 @router.get("/announcements", response_model=CanvasAnnouncementsOut)

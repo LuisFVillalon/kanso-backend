@@ -24,8 +24,9 @@ The course comes from canvas_html_url (/courses/{id}/...), which must be on
 the connection's Canvas host. Each course's assignments are read through
 canvas_data_crud.read(), so they share the panel's cache, its fetch limits
 and its handling of a rejected token. A sync reads at most MAX_SYNC_COURSES
-courses, then the planner overrides; overrides that can't be read only
-leave marked_complete out, with stale set. A task whose course or
+courses, then the planner overrides (canvas_data_crud.read_marked_complete);
+overrides that can't be read, or are cut off at the page cap, only leave
+marked_complete out, with stale set. A task whose course or
 assignment can't be read comes back with synced=false and is left alone: no course in its link, a course or
 assignment Canvas no longer shows, a course past the cap, or Canvas busy
 or down partway through. If Canvas is busy or down before any course is
@@ -193,17 +194,9 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
         raise error
     marked: frozenset[int] = frozenset()
     if error is None:
-        try:
-            result = canvas_data_crud.read(
-                db, user_id, "planner_overrides", (), canvas_data_crud.fetch_marked_complete, now, refresh=refresh
-            )
-        except (CanvasNotFound, CanvasForbidden):
-            pass
-        except (CanvasUnavailable, HTTPException) as exc:
-            error = exc
-        else:
-            reads.append(result)
-            marked = result.data
+        overrides = canvas_data_crud.read_marked_complete(db, user_id, now, refresh)
+        reads.append(overrides)
+        marked = overrides.data
 
     results = []
     tasks = {t.id: t for t in _open_linked_tasks(db, user_id, [task_id for task_id, _, _ in links])}

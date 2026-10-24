@@ -36,7 +36,7 @@ import re
 import threading
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from html.parser import HTMLParser
 from typing import Any
@@ -51,6 +51,8 @@ from app.core import canvas_cache, crypto
 from app.core.canvas_client import (
     CanvasClient,
     CanvasError,
+    CanvasForbidden,
+    CanvasNotFound,
     CanvasRateLimited,
     CanvasTokenInvalid,
     CanvasUnavailable,
@@ -75,7 +77,7 @@ from app.schemas.canvas_schema import (
 # How long each kind of data counts as fresh.
 TTL = {
     "overview": timedelta(minutes=5),
-    # What the user checked off with "Mark as done" in the planner, for the linked-task sync.
+    # What the user checked off with "Mark as done" in the planner, for the sync, assignments and missing work.
     "planner_overrides": timedelta(minutes=5),
     "announcements": timedelta(minutes=5),
     "courses": timedelta(minutes=15),
@@ -375,14 +377,23 @@ def fetch_courses(client: CanvasClient) -> list[CanvasCourse]:
     return [course for raw in courses if (course := _course(client.base_url, raw)) is not None]
 
 
-def fetch_marked_complete(client: CanvasClient) -> frozenset[int]:
+@dataclass(frozen=True)
+class MarkedComplete:
+    """The assignments checked off in Canvas's planner, and whether every override was read."""
+
+    ids: frozenset[int]
+    complete: bool
+
+
+def fetch_marked_complete(client: CanvasClient) -> MarkedComplete:
     """The ids of the assignments the user checked off with "Mark as done" in Canvas's planner.
 
     A planner override names its assignment (a quiz's or graded discussion's
     too) in assignment_id; an assignment's own override may only name it as
-    the plannable.
+    the plannable. Overrides past the client's page cap are left out, with
+    complete false.
     """
-    overrides = client.get_list("/planner/overrides", {"per_page": 100})
+    overrides, complete = client.get_pages("/planner/overrides", {"per_page": 100})
     marked = set()
     for raw in overrides:
         if not isinstance(raw, dict) or raw.get("marked_complete") is not True:
@@ -394,7 +405,28 @@ def fetch_marked_complete(client: CanvasClient) -> frozenset[int]:
             assignment_id = _int(raw.get("plannable_id"))
         if assignment_id is not None:
             marked.add(assignment_id)
-    return frozenset(marked)
+    return MarkedComplete(frozenset(marked), complete)
+
+
+def read_marked_complete(db: Session, user_id: str, now: datetime, refresh: bool = False) -> Read:
+    """read() of the planner overrides, with the checked-off assignment ids as its data.
+
+    Overrides Canvas refuses give no ids. Canvas busy or down, kanso's own
+    fetch limit, or overrides cut off at the page cap give the ids read (if
+    any) with stale set, so the data they mark is still served.
+    """
+    try:
+        result = read(db, user_id, "planner_overrides", (), fetch_marked_complete, now, refresh=refresh)
+    except (CanvasNotFound, CanvasForbidden):
+        return Read(frozenset(), now, frozenset())
+    except (CanvasUnavailable, HTTPException) as exc:
+        return Read(frozenset(), now, frozenset(), busy=isinstance(exc, CanvasRateLimited), stale=True)
+    return replace(result, data=result.data.ids, stale=result.stale or not result.data.complete)
+
+
+def with_marked_complete(items: list[CanvasItem], marked: frozenset[int]) -> list[CanvasItem]:
+    """items with marked_complete set on those whose id is in marked."""
+    return [item.model_copy(update={"marked_complete": True}) if item.id in marked else item for item in items]
 
 
 def fetch_modules(course_id: int) -> Callable[[CanvasClient], list[CanvasModule]]:
