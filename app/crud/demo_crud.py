@@ -10,7 +10,11 @@ daily, weekly and monthly mood check-ins, so Reports has history for every
 range, drawn so each month shows a different kind of link between mood and
 activity (see _plan_history) and energy and stress set apart on days with
 the Work and COMM 103 tags (see Mood check-ins); per-weekday work windows
-with a rest day; a term tracker and an archived term.
+with a rest day; a term tracker and an archived term; and calendar events
+across the history and a few weeks ahead: classes repeating through the
+term, open-ended weekly and every-other-week series, one-offs (an all-day
+and an overnight one among them), a cancelled and an edited occurrence, and
+archived events (see Events).
 
 A fixed random seed keeps the sample the same for the same local date.
 seed_demo_data() first wipes every row the sandbox user owns, so reloading
@@ -31,6 +35,7 @@ from app.crud.account_crud import delete_user_rows
 from app.crud.habit_crud import _max_streak_from_dates, _streak_ending_on, resolve_today
 from app.models.archived_term_model import ArchivedTerm
 from app.models.calendar_settings_model import CalendarSettings
+from app.models.event_model import Event, EventException
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
 from app.models.mood_checkin_model import MoodCheckin
@@ -43,6 +48,9 @@ from app.models.task_model import Task
 # Days of history behind today: completed tasks, habit logs, note sessions and
 # daily mood check-ins all reach this far back.
 HISTORY_DAYS = 90
+
+# The demo's events are at these wall times when the caller sends no zone.
+DEFAULT_TIME_ZONE = "America/Los_Angeles"
 
 # The class tags match the sample Canvas courses (crud/canvas_sample.py).
 _TAGS = {
@@ -80,9 +88,12 @@ def _at(day: date, hour: int, minute: int, now: datetime) -> datetime:
     return min(datetime.combine(day, time(hour, minute), tzinfo=UTC), now - timedelta(hours=1))
 
 
-def seed_demo_data(db: Session, user_id: str, local_date: str | None = None) -> None:
+def seed_demo_data(
+    db: Session, user_id: str, local_date: str | None = None, time_zone: str = DEFAULT_TIME_ZONE
+) -> None:
     """Wipe and repopulate a demo sandbox with sample data dated relative to
-    the caller's local date (server date if omitted)."""
+    the caller's local date (server date if omitted), its events at wall times
+    in the caller's IANA time_zone."""
     delete_user_rows(db, user_id)
 
     today = resolve_today(local_date)
@@ -99,12 +110,13 @@ def seed_demo_data(db: Session, user_id: str, local_date: str | None = None) -> 
         rest_days=_REST_DAYS,
         day_windows=_DAY_WINDOWS,
     ))
-    db.add(CalendarSettings(
+    term = CalendarSettings(
         user_id=user_id,
         title="Fall Semester",
         start_date=today - timedelta(days=40),
         end_date=today + timedelta(days=70),
-    ))
+    )
+    db.add(term)
     # The term before it, archived, so the month calendar shows a past term too.
     db.add(ArchivedTerm(
         user_id=user_id,
@@ -120,6 +132,7 @@ def seed_demo_data(db: Session, user_id: str, local_date: str | None = None) -> 
     _seed_task_history(db, user_id, today, now, tags, rng, plan)
     _seed_habits(db, user_id, today, tags, rng, plan)
     _seed_notes(db, user_id, today, now, tags, rng, plan)
+    _seed_events(db, user_id, today, now, tags, time_zone, term.end_date)
     _seed_mood_checkins(db, user_id, today, plan, _tag_days(db, user_id))
 
     db.commit()
@@ -553,6 +566,97 @@ def _seed_notes(
             for started, ended in ranges
         )
 
+
+
+# ── Events ───────────────────────────────────────────────────────────────────
+# Classes repeat through the term (it has an end date); the gym, library
+# shifts and book club repeat with none. Nearly all of it sits inside the day's
+# work window, so the daily brief's capacity and Reports › Events have time to
+# count. Weekdays are 0 (Sunday) to 6 (Saturday), as in Event.repeat_days.
+# (title, tag, weekdays, every n weeks, start, end, first day and last day in
+# days from today, a last day of "term" ending with the term, reminder minutes)
+_SERIES = [
+    ("CS 460 Lecture", "CS 460", [1, 3], 1, time(10, 0), time(11, 15), -40, "term", 15),
+    ("MATH 254 Lecture", "MATH 254", [1, 3, 5], 1, time(13, 0), time(13, 50), -40, "term", None),
+    ("COMM 103 Lecture", "COMM 103", [2, 4], 1, time(10, 0), time(11, 15), -40, "term", None),
+    ("PSY 101 Lecture", "PSY 101", [2, 4], 1, time(12, 30), time(13, 45), -40, "term", 10),
+    ("ART 157 Studio", "ART 157", [5], 2, time(14, 0), time(16, 0), -40, "term", None),
+    ("Summer research lab", "Work", [1, 3, 5], 1, time(9, 0), time(12, 0), -HISTORY_DAYS, -50, None),
+    ("Library desk shift", "Work", [2, 4], 1, time(17, 0), time(20, 0), -HISTORY_DAYS, None, None),
+    ("Gym session", "Health", [6], 1, time(10, 30), time(11, 30), -HISTORY_DAYS, None, 30),
+    ("Book club", "Personal", [4], 2, time(20, 30), time(21, 45), -HISTORY_DAYS + 6, None, None),
+]
+
+# One-off events: (title, tag, days from today, start, end (None all day;
+# before start runs past midnight), reminder minutes, archived, description)
+_ONE_OFF_EVENTS = [
+    ("MATH 254 Midterm", "MATH 254", -18, time(13, 0), time(14, 50), None, False, "Room 107, bring a calculator."),
+    ("CS 460 Hackathon", "CS 460", -25, time(20, 0), time(2, 0), None, False, "Overnight in the CS lab."),
+    ("COMM 103 Speech practice", "COMM 103", -30, time(15, 0), time(16, 0), None, True, None),
+    ("PSY 101 Study group", "PSY 101", -5, time(18, 0), time(19, 30), None, False, "Library room 3B."),
+    ("Advisor meeting", "Personal", 3, time(15, 0), time(15, 30), 60, False, "Ask about spring registration."),
+    ("Campus career fair", "Work", 6, time(0, 0), None, None, False, None),
+    ("Dentist appointment", "Health", 12, time(9, 0), time(10, 0), 60, True, None),
+]
+
+
+def _first_on(day: date, weekdays: list[int]) -> date:
+    """The first day on or after `day` that falls on one of `weekdays` (0=Sun..6=Sat)."""
+    while day.isoweekday() % 7 not in weekdays:
+        day += timedelta(days=1)
+    return day
+
+
+def _seed_events(
+    db: Session, user_id: str, today: date, now: datetime, tags: dict[str, Tag], time_zone: str, term_end: date
+) -> None:
+    """The repeating series and one-off events, a cancelled lecture and an
+    edited one, and an archived event on either side of today."""
+    series: dict[str, Event] = {}
+    for title, tag, weekdays, interval, start, end, first, last, reminder in _SERIES:
+        event = Event(
+            user_id=user_id,
+            title=title,
+            start_date=_first_on(today + timedelta(days=first), weekdays),
+            end_date=term_end if last == "term" else None if last is None else today + timedelta(days=last),
+            start_time=start,
+            end_time=end,
+            time_zone=time_zone,
+            repeat_days=weekdays,
+            repeat_interval=interval,
+            reminder_minutes=reminder,
+        )
+        event.tags = [tags[tag]]
+        series[title] = event
+    for title, tag, offset, start, end, reminder, archived, description in _ONE_OFF_EVENTS:
+        event = Event(
+            user_id=user_id,
+            title=title,
+            description=description,
+            all_day=end is None,
+            start_date=today + timedelta(days=offset),
+            start_time=None if end is None else start,
+            end_time=end,
+            time_zone=time_zone,
+            repeat_days=[],
+            reminder_minutes=reminder,
+            archived_at=now if archived else None,
+        )
+        event.tags = [tags[tag]]
+        series[title] = event
+    db.add_all(series.values())
+
+    # A lecture cancelled last week, and next week's PSY 101 lecture turned into the midterm.
+    series["CS 460 Lecture"].exceptions.append(
+        EventException(occurrence_date=_first_on(today - timedelta(days=7), [3]), cancelled=True)
+    )
+    series["PSY 101 Lecture"].exceptions.append(EventException(
+        occurrence_date=_first_on(today + timedelta(days=7), [4]),
+        title="PSY 101 Midterm",
+        description="Chapters 1-8. Bring a #2 pencil.",
+        end_time=time(14, 30),
+    ))
+    db.flush()
 
 
 # ── Mood check-ins ───────────────────────────────────────────────────────────

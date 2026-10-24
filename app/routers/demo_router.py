@@ -9,7 +9,7 @@ or wipe another's edits.
 
 POST /demo/seed   (authenticated, anonymous users only)
   Wipes every row the caller owns and repopulates it with sample data dated
-  relative to the caller's local_date. Refused for any non-anonymous user,
+  relative to the caller's local_date, its events in the caller's tz. Refused for any non-anonymous user,
   so it can never touch a real account's data. After responding, it deletes
   sandboxes older than DEMO_SANDBOX_TTL so anonymous users don't pile up.
 """
@@ -22,10 +22,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
+from app.core.http_utils import require_time_zone
 from app.core.rate_limit import RateLimiter
 from app.core.supabase_admin import delete_auth_user
 from app.crud.account_crud import delete_user_rows
-from app.crud.demo_crud import seed_demo_data
+from app.crud.demo_crud import DEFAULT_TIME_ZONE, seed_demo_data
 from app.database.database import SessionLocal, get_db
 
 log = logging.getLogger(__name__)
@@ -79,6 +80,12 @@ def reset_and_seed_demo_data(
         "relative to it, so 'due today' tasks and today's habit logs match the "
         "visitor's day rather than the server's.",
     ),
+    tz: str | None = Query(
+        None,
+        description="Caller's IANA time zone, e.g. America/Los_Angeles. The sample events are at "
+        "their wall times there, so classes sit inside the visitor's work windows "
+        f"({DEFAULT_TIME_ZONE} if omitted).",
+    ),
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -88,6 +95,8 @@ def reset_and_seed_demo_data(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Demo data can only be loaded into a demo sandbox.",
         )
+    if tz:
+        require_time_zone(tz)
     _seed_limiter.check(current_user.id)
-    seed_demo_data(db, current_user.id, local_date=local_date)
+    seed_demo_data(db, current_user.id, local_date=local_date, time_zone=tz or DEFAULT_TIME_ZONE)
     background_tasks.add_task(_delete_stale_sandboxes)
