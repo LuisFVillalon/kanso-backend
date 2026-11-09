@@ -5,6 +5,7 @@ from app.models.calendar_settings_model import CalendarSettings
 from app.models.canvas_connection_model import CanvasConnection
 from app.models.drawing_model import Drawing
 from app.models.event_model import Event
+from app.models.google_calendar_model import GoogleCalendarConnection, GoogleOAuthState
 from app.models.habit_model import Habit
 from app.models.mood_checkin_model import MoodCheckin
 from app.models.note_model import Note
@@ -16,13 +17,15 @@ from app.models.term_rollover_model import TermRollover
 
 # Every table holding rows scoped to a user_id. Adding a new user-owned table?
 # Add its model here — account deletion and the demo reset both rely on it.
-# note_sessions, habit_logs, event_exceptions and the task/note/habit/event
-# tag join tables cascade from their parents at the database level.
+# note_sessions, habit_logs, event_exceptions, the task/note/habit/event tag
+# join tables and everything imported from Google cascade from their parents
+# at the database level.
 USER_OWNED_MODELS = (
     Note, Task, Habit, Event, Tag, Profile, Drawing, CalendarSettings, ArchivedTerm, TermRollover,
     NotificationPreferences, NotificationState,
     MoodCheckin,
     CanvasConnection,
+    GoogleCalendarConnection, GoogleOAuthState,
 )
 
 

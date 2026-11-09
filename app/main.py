@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.crypto import EncryptionKeyError, check_key
+from app.core.http_utils import allowed_origins
 from app.crud.notification_crud import prune_states
 from app.crud.trash_crud import purge_expired
 from app.database.database import SessionLocal, check_db_connection
@@ -18,6 +19,7 @@ from app.routers import (
     demo_router,
     drawing_router,
     events_router,
+    google_calendar_router,
     habits_router,
     mood_router,
     notes_router,
@@ -28,17 +30,6 @@ from app.routers import (
     trash_router,
     user_router,
 )
-
-# Comma-separated list of allowed frontend origins, e.g.
-# "http://localhost:3000,https://kanso-web-app.vercel.app"
-# New deployment targets (a staging URL, a custom domain) are added via env
-# var, not a source change.
-_DEFAULT_ORIGINS = "http://localhost:3000,https://kanso-web-app.vercel.app"
-ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
-    if origin.strip()
-]
 
 
 @asynccontextmanager
@@ -80,14 +71,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="kanso API",
     description=(
-        "Tasks, notes, habits, mood check-ins, notifications, daily-debrief and Canvas API behind the kanso web app."
+        "Tasks, notes, habits, mood check-ins, notifications, daily-debrief, Canvas and Google Calendar API "
+        "behind the kanso web app."
     ),
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,6 +100,7 @@ app.include_router(notifications_router.router)
 app.include_router(mood_router.router)
 app.include_router(canvas_router.router)
 app.include_router(events_router.router)
+app.include_router(google_calendar_router.router)
 
 
 @app.get("/", include_in_schema=False)

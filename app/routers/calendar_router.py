@@ -20,6 +20,7 @@ from app.crud.calendar_crud import (
     update_term_rollover,
     upsert_calendar_settings,
 )
+from app.crud.google_calendar_crud import refresh_if_stale
 from app.crud.habit_crud import resolve_today
 from app.database.database import get_db
 from app.schemas.activity_schema import CalendarActivity
@@ -182,4 +183,5 @@ def read_calendar_activity(
     calendar week view and weekly/monthly/yearly reports (which ask for
     archived items too)."""
     require_date_range(start_date, end_date, ACTIVITY_RANGE_MAX_DAYS)
+    refresh_if_stale(db, current_user.id)
     return get_calendar_activity(db, current_user.id, start_date, end_date, require_time_zone(tz), include_archived)

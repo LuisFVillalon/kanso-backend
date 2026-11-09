@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
@@ -16,6 +16,7 @@ from app.crud.event_crud import (
     update_event,
 )
 from app.crud.event_occurrence_crud import get_archived_occurrences, get_event_report
+from app.crud.google_calendar_crud import refresh_if_stale
 from app.database.database import get_db
 from app.routers.calendar_router import ACTIVITY_RANGE_MAX_DAYS
 from app.schemas.event_schema import EditScope, Event, EventCreate, EventOccurrence, EventReport, EventUpdate
@@ -38,6 +39,13 @@ _TRASHED_OCCURRENCE_DATE = Query(
 _TZ = Query(..., description="The caller's IANA time zone, e.g. America/Los_Angeles, which occurrences are placed in.")
 _START = Query(..., description="First local calendar day of the range (YYYY-MM-DD).")
 _END = Query(..., description="Last local calendar day of the range, inclusive (YYYY-MM-DD).")
+
+
+def _kanso_event_id(event_id: int) -> int:
+    """Refuse the negative ids of events imported from Google, which only their tags can change."""
+    if event_id < 0:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="google_event_read_only")
+    return event_id
 
 
 @router.get("/get-events", response_model=list[Event])
@@ -82,6 +90,7 @@ def read_event_report(
     by tag, day, week and month, and the free time events leave in the work windows.
     archived_count counts past archived occurrences; upcoming archived ones are left out."""
     require_date_range(start_date, end_date, ACTIVITY_RANGE_MAX_DAYS)
+    refresh_if_stale(db, current_user.id)
     return get_event_report(db, current_user.id, start_date, end_date, require_time_zone(tz), datetime.now(UTC))
 
 
@@ -96,8 +105,8 @@ def create_new_event(
 
 @router.put("/update-event/{event_id}", response_model=Event)
 def update_event_by_id(
-    event_id: int,
     changes: EventUpdate,
+    event_id: int = Depends(_kanso_event_id),
     scope: EditScope = _SCOPE,
     occurrence_date: date | None = _OCCURRENCE_DATE,
     current_user: UserInfo = Depends(get_current_user),
@@ -112,7 +121,7 @@ def update_event_by_id(
 
 @router.patch("/archive-event/{event_id}", response_model=Event)
 def archive_event_by_id(
-    event_id: int,
+    event_id: int = Depends(_kanso_event_id),
     scope: EditScope = _SCOPE,
     occurrence_date: date | None = _OCCURRENCE_DATE,
     current_user: UserInfo = Depends(get_current_user),
@@ -126,7 +135,7 @@ def archive_event_by_id(
 
 @router.patch("/unarchive-event/{event_id}", response_model=Event)
 def unarchive_event_by_id(
-    event_id: int,
+    event_id: int = Depends(_kanso_event_id),
     scope: EditScope = _SCOPE,
     occurrence_date: date | None = _OCCURRENCE_DATE,
     current_user: UserInfo = Depends(get_current_user),
@@ -140,7 +149,7 @@ def unarchive_event_by_id(
 
 @router.delete("/del-event/{event_id}", response_model=Event)
 def delete_event_by_id(
-    event_id: int,
+    event_id: int = Depends(_kanso_event_id),
     scope: EditScope = _SCOPE,
     occurrence_date: date | None = _OCCURRENCE_DATE,
     current_user: UserInfo = Depends(get_current_user),
@@ -153,7 +162,7 @@ def delete_event_by_id(
 
 @router.patch("/restore-event/{event_id}", response_model=Event)
 def restore_event_by_id(
-    event_id: int,
+    event_id: int = Depends(_kanso_event_id),
     occurrence_date: date | None = _TRASHED_OCCURRENCE_DATE,
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -166,7 +175,7 @@ def restore_event_by_id(
 
 @router.delete("/purge-event/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
 def purge_event_by_id(
-    event_id: int,
+    event_id: int = Depends(_kanso_event_id),
     occurrence_date: date | None = _TRASHED_OCCURRENCE_DATE,
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),

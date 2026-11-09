@@ -1,7 +1,24 @@
+import os
 from datetime import date
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
+
+# Comma-separated list of allowed frontend origins, e.g.
+# "http://localhost:3000,https://kanso-web-app.vercel.app"
+# New deployment targets (a staging URL, a custom domain) are added via env
+# var, not a source change.
+_DEFAULT_ORIGINS = "http://localhost:3000,https://kanso-web-app.vercel.app"
+
+
+def allowed_origins() -> list[str]:
+    return [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",") if origin.strip()]
+
+
+def default_origin() -> str:
+    """The frontend to send a browser to when the request doesn't say which: the first https one."""
+    origins = allowed_origins()
+    return ([origin for origin in origins if origin.startswith("https://")] or origins or [""])[0]
 
 
 def require_found(obj, detail: str = "Not found"):
