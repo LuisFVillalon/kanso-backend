@@ -14,6 +14,11 @@ What the calendar shows:
   flagged, so the calendar keeps its history.
 - Archived occurrences that haven't ended yet are left out; they are listed
   under the archive instead (get_archived_occurrences).
+
+Events imported from Google Calendar's selected calendars are occurrences
+too, counted like kanso's own: their rows already hold each instance, so they
+need no rule. Their event_id is the row's id negated, which can't collide
+with a kanso event's id, and they are read-only.
 """
 
 from collections.abc import Callable, Iterable, Iterator
@@ -21,10 +26,11 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.crud.profile_crud import get_profile, work_window
 from app.models.event_model import Event, EventException
+from app.models.google_calendar_model import GoogleCalendar, GoogleCalendarEvent
 from app.models.profile_model import Profile
 from app.schemas.event_schema import (
     EventOccurrence,
@@ -81,9 +87,20 @@ def _instant(day: date, t: time, tz: ZoneInfo) -> datetime:
     return datetime.combine(day, t, tzinfo=tz).astimezone(UTC)
 
 
+@dataclass(frozen=True)
+class ImportedSeries:
+    """What an occurrence reads from its series, for an event imported from Google."""
+
+    id: int
+    time_zone: str
+    repeat_days: tuple = ()
+    repeat_interval: int = 1
+    reminder_minutes: None = None
+
+
 @dataclass(eq=False)
 class Occurrence:
-    event: Event
+    event: Event | ImportedSeries
     exception: EventException | None
     occurrence_date: date
     # The day it is on in the series' time zone, after any move.
@@ -98,6 +115,8 @@ class Occurrence:
     ends_at: datetime
     archived: bool
     edited: bool
+    source: str = "kanso"
+    html_link: str | None = None
 
     def past(self, now: datetime) -> bool:
         return self.ends_at <= now
@@ -209,9 +228,73 @@ def load_series(db: Session, user_id: str) -> list[Event]:
     )
 
 
+def _imported_occurrence(
+    row: GoogleCalendarEvent, day: date, all_day: bool, starts_at: datetime, ends_at: datetime
+) -> Occurrence:
+    zone = ZoneInfo(row.time_zone)
+    return Occurrence(
+        event=ImportedSeries(id=-row.id, time_zone=row.time_zone),
+        exception=None,
+        occurrence_date=day,
+        day=day,
+        title=row.title,
+        description=row.description,
+        all_day=all_day,
+        start_time=None if all_day else starts_at.astimezone(zone).time(),
+        end_time=None if all_day else ends_at.astimezone(zone).time(),
+        tags=row.resolved_tags,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        archived=False,
+        edited=False,
+        source="google",
+        html_link=row.html_link,
+    )
+
+
+def expand_imported(row: GoogleCalendarEvent, first: date, last: date, tz: ZoneInfo | None) -> Iterator[Occurrence]:
+    """The imported event's occurrences on local days first..last in `tz` (its own zone if None).
+
+    An all-day event has one per day it covers, each keeping its day, as a
+    kanso all-day event does. A timed one counts if any of it falls in the range.
+    """
+    zone = ZoneInfo(row.time_zone)
+    if row.all_day:
+        day = max(first, row.start_date)
+        while day <= min(last, row.end_date):
+            yield _imported_occurrence(row, day, True, _midnight(day, zone), _midnight(day + DAY, zone))
+            day += DAY
+        return
+    view_tz = tz or zone
+    if row.starts_at < _midnight(last + DAY, view_tz) and row.ends_at > _midnight(first, view_tz):
+        yield _imported_occurrence(row, row.start_date, False, row.starts_at, row.ends_at)
+
+
+def load_imported(db: Session, user_id: str, first: date, last: date) -> list[GoogleCalendarEvent]:
+    """The user's imported events from selected calendars near local days first..last."""
+    return (
+        db.query(GoogleCalendarEvent)
+        .join(GoogleCalendarEvent.calendar)
+        .options(
+            selectinload(GoogleCalendarEvent.tags),
+            contains_eager(GoogleCalendarEvent.calendar).selectinload(GoogleCalendar.default_tag),
+        )
+        .filter(
+            GoogleCalendarEvent.user_id == user_id,
+            GoogleCalendar.selected.is_(True),
+            # Days in the event's zone can sit a day off the caller's.
+            GoogleCalendarEvent.start_date <= last + 2 * DAY,
+            GoogleCalendarEvent.end_date >= first - 2 * DAY,
+        )
+        .all()
+    )
+
+
 def occurrences_between(db: Session, user_id: str, first: date, last: date, tz: ZoneInfo | None) -> list[Occurrence]:
-    """Every live occurrence on local days first..last, archived ones included, in start order."""
+    """Every live occurrence on local days first..last, imported ones and archived ones included, in start order."""
     occurrences = [occ for event in load_series(db, user_id) for occ in expand(event, first, last, tz)]
+    for row in load_imported(db, user_id, first, last):
+        occurrences += expand_imported(row, first, last, tz)
     return sorted(occurrences, key=lambda o: (o.starts_at, o.event.id, o.occurrence_date))
 
 
@@ -245,6 +328,9 @@ def present(occ: Occurrence, tz: ZoneInfo | None, now: datetime) -> EventOccurre
         edited=occ.edited,
         past=occ.past(now),
         archived=occ.archived,
+        source=occ.source,
+        read_only=occ.source != "kanso",
+        html_link=occ.html_link,
     )
 
 
@@ -433,9 +519,7 @@ def todays_events(
     ended by `local_now`; without a local time none has.
     """
     now = datetime.now(UTC)
-    occurrences = [occ for event in load_series(db, user_id) for occ in expand(event, today, today, tz)]
-    occurrences.sort(key=lambda o: (o.starts_at, o.event.id, o.occurrence_date))
-    occurrences = [occ for occ in occurrences if occ.visible(now)]
+    occurrences = [occ for occ in occurrences_between(db, user_id, today, today, tz) if occ.visible(now)]
 
     def zone(occ: Occurrence) -> ZoneInfo:
         return tz or ZoneInfo(occ.event.time_zone)

@@ -132,6 +132,8 @@ class Event(BaseModel):
     archived_at: datetime | None = None
     # NULL unless the series is in the trash.
     deleted_at: datetime | None = None
+    source: Literal["kanso"] = "kanso"
+    read_only: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -168,6 +170,12 @@ class EventOccurrence(BaseModel):
     past: bool = False
     # Archived, on its own or with its series.
     archived: bool = False
+    # "google" for an event imported from Google Calendar, which is
+    # read_only: only its tags can change (PATCH /google-calendar/events/{event_id}/tags).
+    source: Literal["kanso", "google"] = "kanso"
+    read_only: bool = False
+    # An imported event's page in Google Calendar, if Google gave one.
+    html_link: str | None = None
 
 
 class EventTagMinutes(BaseModel):
