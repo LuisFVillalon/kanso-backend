@@ -28,6 +28,8 @@ LINKED_TASKS_MAX = 100
 # Canvas: the pasted school address, the access token, the courses
 # unticked under "Courses to show", and the classes with default tags.
 CANVAS_URL_MAX = 2048
+# Google's OAuth code and the state, passed back by the frontend.
+GOOGLE_OAUTH_VALUE_MAX = 2048
 CANVAS_TOKEN_MAX = 512
 CANVAS_HIDDEN_COURSES_MAX = 500
 CANVAS_COURSE_TAGS_MAX = 500

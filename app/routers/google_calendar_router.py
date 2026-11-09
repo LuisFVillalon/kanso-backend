@@ -3,7 +3,8 @@ Google Calendar, read-only import.
 
 GET    /google-calendar/status            — configured, connected, account, last sync and last error
 POST   /google-calendar/connect           — Google's consent URL for this user
-GET    /google-calendar/callback          — Google's redirect target; finishes connecting, sends the browser back
+GET    /google-calendar/callback          — Google's redirect target; passes the code on to the frontend
+POST   /google-calendar/complete          — finishes connecting with that code and state
 DELETE /google-calendar/connection        — revokes the token where possible and deletes everything imported
 GET    /google-calendar/calendars         — the account's calendars
 PATCH  /google-calendar/calendars/{id}    — selects a calendar or sets its default tag
@@ -11,16 +12,18 @@ POST   /google-calendar/sync              — syncs now and returns the status
 PATCH  /google-calendar/events/{id}/tags  — sets an imported event's own tags, or returns it to the default
 
 All but the callback use the Supabase JWT. The callback is a browser redirect
-from Google with no JWT: the single-use state issued to the signed-in user at
-connect says whose account it is. It sends the browser to the frontend's
-/settings with google_calendar=success, or google_calendar=error&reason=<code>.
+from Google with no JWT, so it connects nothing: it sends the browser to the
+frontend's /settings with google_calendar=complete&code=<code>&state=<state>,
+or google_calendar=error&reason=<code>. The frontend then calls complete, which
+refuses (403 google_invalid_state) unless the state is live and was issued to
+the signed-in user, so a consent link can't attach someone else's Google account.
 
 Imported events reach the calendar through the existing event and activity
 responses, with source "google" and read_only true. Their event_id is
 negative, and is the {id} for setting their tags.
 
 Without the Google OAuth values the app runs as usual: status says
-configured=false and connect and sync answer 503 google_calendar_not_configured.
+configured=false and connect, complete and sync answer 503 google_calendar_not_configured.
 Demo sandboxes can't connect (403), and their status says configured=false.
 """
 
@@ -33,12 +36,13 @@ from sqlalchemy.orm import Session
 
 from app.core import crypto, google_calendar
 from app.core.auth import UserInfo, get_current_user
-from app.core.google_calendar import GoogleError
+from app.core.google_calendar import GoogleError, GoogleUnavailable
 from app.core.http_utils import allowed_origins, default_origin, require_found
 from app.core.rate_limit import RateLimiter
 from app.crud import google_calendar_crud as crud
 from app.database.database import get_db
 from app.schemas.google_calendar_schema import (
+    GoogleCalendarComplete,
     GoogleCalendarConnectOut,
     GoogleCalendarOut,
     GoogleCalendarStatus,
@@ -105,23 +109,38 @@ def callback(
     error: str | None = None,
     db: Session = Depends(get_db),
 ):
-    """Google's redirect after the consent screen."""
-    pending = crud.consume_state(db, state) if state else None
-    if pending is None:
+    """Google's redirect after the consent screen: hands the code to the frontend."""
+    origin = crud.state_origin(db, state) if state else None
+    if origin is None:
         return _settings_redirect(default_origin(), google_calendar="error", reason="google_invalid_state")
-    user_id, origin = pending
-    if not google_calendar.configured():
-        return _settings_redirect(origin, google_calendar="error", reason="google_calendar_not_configured")
     if error or not code:
         return _settings_redirect(origin, google_calendar="error", reason="google_access_denied")
+    return _settings_redirect(origin, google_calendar="complete", code=code, state=state)
+
+
+@router.post("/complete", response_model=GoogleCalendarStatus)
+def complete(
+    body: GoogleCalendarComplete,
+    current_user: UserInfo = Depends(_real_user),
+    db: Session = Depends(get_db),
+):
+    """Finish connecting, for the user the state was issued to. A failed first sync still connects."""
+    _require_configured()
+    _google_call_limiter.check(current_user.id)
+    if not crud.consume_state(db, body.state, current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="google_invalid_state")
     try:
-        crud.finish_connect(db, user_id, code)
+        crud.finish_connect(db, current_user.id, body.code)
+    except GoogleUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.code) from None
     except GoogleError as exc:
-        return _settings_redirect(origin, google_calendar="error", reason=exc.code)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.code) from None
     except crypto.EncryptionKeyError:
         log.error("GOOGLE_CALENDAR | the token encryption key is unusable")
-        return _settings_redirect(origin, google_calendar="error", reason="google_calendar_not_configured")
-    return _settings_redirect(origin, google_calendar="success")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="google_calendar_not_configured"
+        ) from None
+    return crud.status_out(crud.get_connection(db, current_user.id), configured=True)
 
 
 @router.delete("/connection", status_code=status.HTTP_204_NO_CONTENT)

@@ -138,12 +138,26 @@ def _start(client) -> str:
     return _state(response.json()["authorization_url"])
 
 
+def _callback(client, state):
+    return client.get("/google-calendar/callback", params={"code": "c", "state": state}, follow_redirects=False)
+
+
+def _complete(client, state):
+    return client.post("/google-calendar/complete", json={"code": "c", "state": state})
+
+
+def _exchanges(google) -> list:
+    return [r for r in google.requests if r[1] == google_calendar.TOKEN_URL]
+
+
 def _connect(client) -> None:
-    response = client.get(
-        "/google-calendar/callback", params={"code": "c", "state": _start(client)}, follow_redirects=False
-    )
+    state = _start(client)
+    response = _callback(client, state)
     assert response.status_code == 303
-    assert response.headers["location"] == f"{FRONTEND}/settings?google_calendar=success"
+    location = urlsplit(response.headers["location"])
+    assert f"{location.scheme}://{location.netloc}{location.path}" == f"{FRONTEND}/settings"
+    assert parse_qs(location.query) == {"google_calendar": ["complete"], "code": ["c"], "state": [state]}
+    assert _complete(client, state).status_code == 200
 
 
 def _resync(db) -> None:
@@ -184,7 +198,11 @@ def test_unconfigured_reports_it_and_refuses_cleanly(client):
     assert client.get("/google-calendar/status").json() == {
         "configured": False, "connected": False, "email": None, "last_synced_at": None, "last_error": None,
     }
-    for response in (client.post("/google-calendar/connect"), client.post("/google-calendar/sync")):
+    for response in (
+        client.post("/google-calendar/connect"),
+        client.post("/google-calendar/complete", json={"code": "c", "state": "s"}),
+        client.post("/google-calendar/sync"),
+    ):
         assert response.status_code == 503
         assert response.json()["detail"] == "google_calendar_not_configured"
     assert client.get("/google-calendar/calendars").json() == []
@@ -203,6 +221,7 @@ def test_demo_sandboxes_cannot_connect(client, google):
     app.dependency_overrides[get_current_user] = lambda: UserInfo(USER_ID, "", "anonymous", True)
     assert client.get("/google-calendar/status").json()["configured"] is False
     assert client.post("/google-calendar/connect").status_code == 403
+    assert client.post("/google-calendar/complete", json={"code": "c", "state": "s"}).status_code == 403
 
 
 # ── OAuth ────────────────────────────────────────────────────────────────────
@@ -218,14 +237,30 @@ def test_connect_asks_only_for_read_only_offline_access(client, google):
     assert query["response_type"] == ["code"]
 
 
-def test_callback_attaches_the_account_to_the_user_the_state_was_issued_to(client, db, google):
+def test_the_callback_alone_connects_nothing(client, db, google):
     state = _start(client)
-    # The callback has no JWT; only the state says whose account this is.
-    app.dependency_overrides[get_current_user] = lambda: UserInfo(OTHER_USER_ID, "", "email", False)
-    response = client.get("/google-calendar/callback", params={"code": "c", "state": state}, follow_redirects=False)
-    assert response.headers["location"] == f"{FRONTEND}/settings?google_calendar=success"
+    assert _callback(client, state).status_code == 303
+    assert not _exchanges(google)
+    assert db.query(GoogleCalendarConnection).count() == 0
+    # The state is still unspent for the signed-in step.
+    assert _complete(client, state).status_code == 200
     assert get_connection(db, USER_ID) is not None
-    assert get_connection(db, OTHER_USER_ID) is None
+
+
+def test_a_different_signed_in_user_cannot_complete(client, db, google):
+    state = _start(client)
+    _callback(client, state)
+    _as_other_user()
+    response = _complete(client, state)
+    assert response.status_code == 403 and response.json()["detail"] == "google_invalid_state"
+    assert not _exchanges(google)
+    assert db.query(GoogleCalendarConnection).count() == 0
+
+
+def test_complete_rejects_an_unknown_state(client, db, google):
+    assert _complete(client, "forged").status_code == 403
+    assert not _exchanges(google)
+    assert db.query(GoogleCalendarConnection).count() == 0
 
 
 @pytest.mark.parametrize("state", ["forged", ""])
@@ -234,24 +269,25 @@ def test_callback_rejects_an_unknown_state(client, db, google, state):
     query = parse_qs(urlsplit(response.headers["location"]).query)
     assert query == {"google_calendar": ["error"], "reason": ["google_invalid_state"]}
     assert db.query(GoogleCalendarConnection).count() == 0
-    assert not [r for r in google.requests if r[1] == google_calendar.TOKEN_URL]
+    assert not _exchanges(google)
 
 
-def test_callback_state_works_once(client, db, google):
+def test_a_state_completes_once(client, db, google):
     state = _start(client)
-    assert client.get(
-        "/google-calendar/callback", params={"code": "c", "state": state}, follow_redirects=False
-    ).headers["location"].endswith("google_calendar=success")
-    again = client.get("/google-calendar/callback", params={"code": "c", "state": state}, follow_redirects=False)
-    assert "google_invalid_state" in again.headers["location"]
+    assert _complete(client, state).status_code == 200
+    calls = len(_exchanges(google))
+    assert _complete(client, state).status_code == 403
+    assert len(_exchanges(google)) == calls
+    assert "google_invalid_state" in _callback(client, state).headers["location"]
 
 
-def test_callback_rejects_an_expired_state(client, db, google):
+def test_an_expired_state_is_refused(client, db, google):
     state = _start(client)
     db.query(GoogleOAuthState).update({"expires_at": datetime.now(UTC) - timedelta(seconds=1)})
     db.commit()
-    response = client.get("/google-calendar/callback", params={"code": "c", "state": state}, follow_redirects=False)
-    assert "google_invalid_state" in response.headers["location"]
+    assert "google_invalid_state" in _callback(client, state).headers["location"]
+    assert _complete(client, state).status_code == 403
+    assert not _exchanges(google)
     assert db.query(GoogleCalendarConnection).count() == 0
 
 
@@ -264,14 +300,12 @@ def test_callback_reports_a_refused_consent(client, db, google):
     assert db.query(GoogleCalendarConnection).count() == 0
 
 
-def test_callback_refuses_a_partial_grant_and_revokes_it(client, db, google):
+def test_complete_refuses_a_partial_grant_and_revokes_it(client, db, google):
     google.token_response = httpx.Response(200, json={
         "access_token": "a", "refresh_token": FAKE_REFRESH_TOKEN, "scope": google_calendar.SCOPES[0],
     })
-    response = client.get(
-        "/google-calendar/callback", params={"code": "c", "state": _start(client)}, follow_redirects=False
-    )
-    assert "google_scopes_missing" in response.headers["location"]
+    response = _complete(client, _start(client))
+    assert response.status_code == 422 and response.json()["detail"] == "google_scopes_missing"
     assert google.revoked == [FAKE_REFRESH_TOKEN]
     assert db.query(GoogleCalendarConnection).count() == 0
 
@@ -555,6 +589,43 @@ def test_sync_without_a_connection_is_404(client, google):
     assert response.status_code == 404 and response.json()["detail"] == "google_calendar_not_connected"
 
 
+def test_no_transaction_stays_open_while_waiting_on_google(client, db, google, monkeypatch):
+    google.full[PRIMARY] = [_timed("a")]
+    open_during: list[str] = []
+    calls: list[str] = []
+
+    def watching(method, url, **kwargs):
+        calls.append(url)
+        if db.in_transaction():
+            open_during.append(url)
+        return google(method, url, **kwargs)
+
+    monkeypatch.setattr(google_calendar, "_send", watching)
+    _connect(client)
+    _resync(db)
+    assert client.delete("/google-calendar/connection").status_code == 204
+
+    assert any(url.endswith("/events") for url in calls)
+    assert google_calendar.REVOKE_URL in calls
+    assert open_during == []
+
+
+def test_a_rotated_refresh_token_is_kept_even_if_the_sync_then_fails(client, db, google):
+    _connect(client)
+    google.refresh_response = httpx.Response(200, json={
+        "access_token": "access", "refresh_token": "rotated-token", "scope": "",
+    })
+    google.api_status = 500
+    _resync(db)
+    db.expire_all()
+    row = get_connection(db, USER_ID)
+    assert row.last_error == "google_unavailable"
+    assert crypto.decrypt(
+        crypto.Encrypted(bytes(row.token_ciphertext), bytes(row.token_nonce), row.key_version),
+        f"google-calendar:{USER_ID}",
+    ) == "rotated-token"
+
+
 def test_a_second_sync_right_after_the_first_does_nothing(client, db, google):
     _connect(client)
     calls = len(google.requests)
@@ -695,7 +766,7 @@ def test_kanso_occurrences_say_where_they_came_from(client, db, google):
     created = client.post("/create-event", json={
         "title": "Mine", "start_date": _day(0), "start_time": "09:00:00", "end_time": "10:00:00", "time_zone": TZ,
     })
-    assert created.json()["source"] == "kanso" and created.json()["read_only"] is False
+    assert "source" not in created.json() and "read_only" not in created.json()
     [event] = _activity_events(client)
     assert event["source"] == "kanso" and event["read_only"] is False and event["html_link"] is None
 

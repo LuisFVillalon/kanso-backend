@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from time import monotonic
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, or_, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -113,17 +113,25 @@ def start_connect(db: Session, user_id: str, return_origin: str) -> str:
     return google_calendar.authorization_url(state)
 
 
-def consume_state(db: Session, state: str) -> tuple[str, str] | None:
-    """The (user id, return origin) a state was issued for, or None. A state works once."""
+def state_origin(db: Session, state: str) -> str | None:
+    """The frontend a live state came from, or None. Leaves the state unspent."""
+    return db.execute(
+        select(GoogleOAuthState.return_origin).where(
+            GoogleOAuthState.state_hash == _state_hash(state),
+            GoogleOAuthState.expires_at > datetime.now(UTC),
+        )
+    ).scalar_one_or_none()
+
+
+def consume_state(db: Session, state: str, user_id: str) -> bool:
+    """Spend a state issued to this user. A state works once, and another user can't spend it."""
     row = db.execute(
         delete(GoogleOAuthState)
-        .where(GoogleOAuthState.state_hash == _state_hash(state))
-        .returning(GoogleOAuthState.user_id, GoogleOAuthState.return_origin, GoogleOAuthState.expires_at)
+        .where(GoogleOAuthState.state_hash == _state_hash(state), GoogleOAuthState.user_id == user_id)
+        .returning(GoogleOAuthState.expires_at)
     ).first()
     db.commit()
-    if row is None or row.expires_at <= datetime.now(UTC):
-        return None
-    return row.user_id, row.return_origin
+    return row is not None and row.expires_at > datetime.now(UTC)
 
 
 def finish_connect(db: Session, user_id: str, code: str) -> None:
@@ -164,9 +172,13 @@ def disconnect(db: Session, user_id: str) -> None:
     row = get_connection(db, user_id)
     if row is not None:
         try:
-            google_calendar.revoke(_refresh_token(row))
+            refresh_token = _refresh_token(row)
         except (crypto.EncryptionKeyError, crypto.DecryptionError):
             log.warning("GOOGLE_CALENDAR | couldn't read a token to revoke it")
+            refresh_token = None
+        db.commit()
+        if refresh_token is not None:
+            google_calendar.revoke(refresh_token)
         # Calendars, events and their tags cascade from the connection.
         db.delete(row)
     db.execute(delete(GoogleOAuthState).where(GoogleOAuthState.user_id == user_id))
@@ -219,7 +231,7 @@ def _run_sync(db: Session, user_id: str, min_age: timedelta, budget: float) -> N
     if not _claim(db, user_id, min_age):
         return
     try:
-        _sync(db, get_connection(db, user_id), monotonic() + budget)
+        _sync(db, user_id, monotonic() + budget)
     except GoogleError as exc:
         _record_failure(db, user_id, exc.code)
     except (crypto.EncryptionKeyError, crypto.DecryptionError):
@@ -237,16 +249,20 @@ def _record_failure(db: Session, user_id: str, code: str) -> None:
         db.commit()
 
 
-def _sync(db: Session, connection: GoogleCalendarConnection, deadline: float) -> None:
-    tokens = google_calendar.refresh_access_token(_refresh_token(connection), deadline)
+def _sync(db: Session, user_id: str, deadline: float) -> None:
+    connection = get_connection(db, user_id)
+    refresh_token = _refresh_token(connection)
+    db.commit()
+    tokens = google_calendar.refresh_access_token(refresh_token, deadline)
     if tokens.refresh_token:
         # Google may rotate it.
-        encrypted = crypto.encrypt(tokens.refresh_token, _aad(connection.user_id))
+        encrypted = crypto.encrypt(tokens.refresh_token, _aad(user_id))
         connection.token_ciphertext = encrypted.ciphertext
         connection.token_nonce = encrypted.nonce
         connection.key_version = encrypted.key_version
+        db.commit()
     client = GoogleCalendarClient(tokens.access_token, deadline)
-    calendars = _sync_calendars(db, connection, client)
+    calendars = _sync_calendars(db, connection, client.calendars())
     db.commit()
     now = datetime.now(UTC)
     for calendar in calendars:
@@ -263,9 +279,7 @@ def _sync(db: Session, connection: GoogleCalendarConnection, deadline: float) ->
     db.commit()
 
 
-def _sync_calendars(
-    db: Session, connection: GoogleCalendarConnection, client: GoogleCalendarClient
-) -> list[GoogleCalendar]:
+def _sync_calendars(db: Session, connection: GoogleCalendarConnection, listed: list[dict]) -> list[GoogleCalendar]:
     """Bring the stored calendars in line with Google's list. Settings stay; new calendars
     start selected if they are shown in Google Calendar."""
     existing = {
@@ -273,7 +287,7 @@ def _sync_calendars(
         for calendar in db.query(GoogleCalendar).filter(GoogleCalendar.user_id == connection.user_id)
     }
     current: list[GoogleCalendar] = []
-    for item in client.calendars():
+    for item in listed:
         google_id = item.get("id")
         if not google_id:
             continue
@@ -300,9 +314,11 @@ def _sync_calendars(
 def _sync_events(db: Session, calendar: GoogleCalendar, client: GoogleCalendarClient, now: datetime) -> None:
     window_end = now + _HORIZON
     window_is_fresh = calendar.synced_through is not None and calendar.synced_through >= window_end - _MOVE_WINDOW_AFTER
-    if calendar.sync_token and window_is_fresh:
+    google_id, sync_token = calendar.google_calendar_id, calendar.sync_token
+    db.commit()
+    if sync_token and window_is_fresh:
         try:
-            changes = client.events(calendar.google_calendar_id, sync_token=calendar.sync_token)
+            changes = client.events(google_id, sync_token=sync_token)
         except GoogleSyncTokenExpired:
             pass
         else:
@@ -310,7 +326,7 @@ def _sync_events(db: Session, calendar: GoogleCalendar, client: GoogleCalendarCl
             calendar.sync_token = changes.next_sync_token
             return
     window_start = now - _HISTORY
-    listing = client.events(calendar.google_calendar_id, time_min=window_start, time_max=window_end)
+    listing = client.events(google_id, time_min=window_start, time_max=window_end)
     _replace_window(db, calendar, listing.items, window_start, window_end)
     calendar.sync_token = listing.next_sync_token
     calendar.synced_through = window_end

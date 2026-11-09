@@ -132,8 +132,6 @@ class Event(BaseModel):
     archived_at: datetime | None = None
     # NULL unless the series is in the trash.
     deleted_at: datetime | None = None
-    source: Literal["kanso"] = "kanso"
-    read_only: bool = False
 
     model_config = {"from_attributes": True}
 

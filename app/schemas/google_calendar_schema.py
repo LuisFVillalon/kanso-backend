@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.schemas.limits import TAGS_PER_ITEM_MAX
+from app.schemas.limits import GOOGLE_OAUTH_VALUE_MAX, TAGS_PER_ITEM_MAX
 from app.schemas.tag_schema import Tag
 
 
@@ -18,6 +18,13 @@ class GoogleCalendarStatus(BaseModel):
 
 class GoogleCalendarConnectOut(BaseModel):
     authorization_url: str
+
+
+class GoogleCalendarComplete(BaseModel):
+    """The code and state the callback passed to the frontend."""
+
+    code: str = Field(min_length=1, max_length=GOOGLE_OAUTH_VALUE_MAX)
+    state: str = Field(min_length=1, max_length=GOOGLE_OAUTH_VALUE_MAX)
 
 
 class GoogleCalendarOut(BaseModel):
