@@ -257,6 +257,7 @@ def _sync_feed(
             results.append(_unsynced(task_id))
         else:
             results.append(_apply(task, item, zone, now, auto_complete))
+    _drop_completed_blocks(db, tasks.values(), now)
     db.commit()
     return {"fetched_at": result.fetched_at, "busy": result.busy, "stale": result.stale, "results": results}
 
