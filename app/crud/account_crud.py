@@ -14,6 +14,7 @@ from app.models.profile_model import Profile
 from app.models.tag_model import Tag
 from app.models.task_model import Task
 from app.models.term_rollover_model import TermRollover
+from app.models.work_block_model import WorkBlock
 
 # Every table holding rows scoped to a user_id. Adding a new user-owned table?
 # Add its model here — account deletion and the demo reset both rely on it.
@@ -21,7 +22,7 @@ from app.models.term_rollover_model import TermRollover
 # join tables and everything imported from Google, kanso's overrides of it
 # included, cascade from their parents at the database level.
 USER_OWNED_MODELS = (
-    Note, Task, Habit, Event, Tag, Profile, Drawing, CalendarSettings, ArchivedTerm, TermRollover,
+    WorkBlock, Note, Task, Habit, Event, Tag, Profile, Drawing, CalendarSettings, ArchivedTerm, TermRollover,
     NotificationPreferences, NotificationState,
     MoodCheckin,
     CanvasConnection,

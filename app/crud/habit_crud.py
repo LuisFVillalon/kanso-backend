@@ -128,7 +128,9 @@ def get_habits(db: Session, user_id: str, local_date: str | None = None, archive
 
 
 def create_habit(db: Session, habit: HabitCreate, user_id: str):
-    db_habit = Habit(title=habit.title, user_id=user_id, estimated_time=habit.estimated_time)
+    db_habit = Habit(
+        title=habit.title, user_id=user_id, estimated_time=habit.estimated_time, planned_time=habit.planned_time
+    )
     set_item_tags(db, db_habit, habit.tags, user_id)
     db.add(db_habit)
     db.commit()
@@ -143,6 +145,10 @@ def update_habit(db: Session, habit_id: int, habit: HabitCreate, user_id: str, l
 
     db_habit.title = habit.title
     db_habit.estimated_time = habit.estimated_time
+    # Replaced only when the payload includes it, so a client that predates
+    # it doesn't clear a habit's usual time by saving the habit.
+    if "planned_time" in habit.model_fields_set:
+        db_habit.planned_time = habit.planned_time
     set_item_tags(db, db_habit, habit.tags, user_id)
 
     db.commit()

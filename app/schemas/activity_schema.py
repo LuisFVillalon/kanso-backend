@@ -6,6 +6,7 @@ from pydantic import AfterValidator, BaseModel
 from app.schemas.event_schema import EventOccurrence
 from app.schemas.tag_schema import VisibleTags
 from app.schemas.task_schema import TaskParent
+from app.schemas.work_block_schema import WorkBlock
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -85,3 +86,6 @@ class CalendarActivity(BaseModel):
     # Event occurrences on a day in the range, in start order: past ones,
     # archived or not, and upcoming ones that aren't archived.
     events: list[EventOccurrence] = []
+    # Work blocks (planned "work on it" times for tasks and habits) that
+    # overlap the range, in start order. Not events.
+    work_blocks: list[WorkBlock] = []

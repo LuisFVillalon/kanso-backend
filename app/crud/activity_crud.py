@@ -5,6 +5,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.crud.event_occurrence_crud import get_occurrences
+from app.crud.work_block_crud import blocks_between
 from app.models.habit_log_model import HabitLog
 from app.models.habit_model import Habit
 from app.models.note_model import Note as NoteModel
@@ -36,7 +37,9 @@ def get_calendar_activity(
 
     Events follow the calendar's own rule whatever `include_archived` says:
     past occurrences are in, archived ones too (flagged), and upcoming
-    archived ones are out (see event_occurrence_crud).
+    archived ones are out (see event_occurrence_crud). Work blocks overlapping
+    the range are in, placed in `tz`; those of a deleted task or habit are
+    out, and those of an archived one only with `include_archived`.
 
     Due dates and habit log dates are already local calendar dates. Completion
     and session timestamps are UTC, so they are matched against the UTC
@@ -140,4 +143,7 @@ def get_calendar_activity(
         notes=[ActivityNote.model_validate(n) for n in notes],
         habits=[ActivityHabit.model_validate(h) for h in habits],
         events=get_occurrences(db, user_id, start, end, tz, datetime.now(UTC)),
+        work_blocks=blocks_between(
+            db, user_id, range_start_utc.replace(tzinfo=UTC), range_end_utc.replace(tzinfo=UTC), tz, include_archived
+        ),
     )

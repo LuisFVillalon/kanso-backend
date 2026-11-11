@@ -29,6 +29,7 @@ from app.routers import (
     tasks_router,
     trash_router,
     user_router,
+    work_blocks_router,
 )
 
 
@@ -101,6 +102,7 @@ app.include_router(mood_router.router)
 app.include_router(canvas_router.router)
 app.include_router(events_router.router)
 app.include_router(google_calendar_router.router)
+app.include_router(work_blocks_router.router)
 
 
 @app.get("/", include_in_schema=False)

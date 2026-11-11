@@ -5,12 +5,15 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.limits import TAGS_PER_ITEM_MAX, TITLE_MAX
 from app.schemas.tag_schema import Tag, TagCreate, VisibleTags
+from app.schemas.work_block_schema import ClockTime
 
 
 class HabitBase(BaseModel):
     title: str
     tags: list[Tag] = []
     estimated_time: float | None = None
+    # The local time of day the user usually does it ("HH:MM"); null for no set time.
+    planned_time: ClockTime | None = None
 
     @field_validator("estimated_time", mode="before")
     @classmethod

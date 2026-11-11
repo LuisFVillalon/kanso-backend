@@ -11,6 +11,7 @@ from app.core import canvas_cache, canvas_client
 from app.crud import canvas_link_crud, canvas_sample
 from app.crud.canvas_crud import get_connection
 from app.models.task_model import Task
+from app.models.work_block_model import WorkBlock
 from tests.conftest import OTHER_USER_ID, USER_ID
 from tests.test_canvas_read import (  # noqa: F401 (fixtures)
     BASE_URL,
@@ -182,6 +183,19 @@ def test_sync_completes_tasks_whose_assignment_is_done(connected, db, canvas):
     assert row.canvas_completed_at is not None and row.completed_by_canvas is True
     assert _task(db, open_["id"]).completed is False
     assert canvas.paths() == ["/api/v1/courses/11/assignments", "/api/v1/planner/overrides"]
+
+
+def test_a_task_the_sync_completes_loses_its_upcoming_work_blocks(connected, db, canvas):
+    graded = _create(connected, title="Problem Set 5", **_link(301))
+    open_ = _create(connected, title="Quiz 3", **_link(302))
+    for task, day in ((graded, "2026-01-05"), (graded, "2030-03-04"), (open_, "2030-03-04")):
+        block = {"task_id": task["id"], "date": day, "start_time": "17:00", "end_time": "18:00",
+                 "time_zone": "America/Los_Angeles"}
+        assert connected.post("/create-work-block", json=block).status_code == 200
+    _sync(connected)
+    db.expire_all()
+    kept = db.query(WorkBlock.task_id, WorkBlock.date).order_by(WorkBlock.task_id, WorkBlock.date).all()
+    assert kept == [(graded["id"], date(2026, 1, 5)), (open_["id"], date(2030, 3, 4))]
 
 
 def _assignment(canvas, assignment_id) -> dict:
