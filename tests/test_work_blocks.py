@@ -1,6 +1,6 @@
 """Work blocks: planned "work on it" times for tasks and habits, and habits' usual time (planned_time)."""
 
-from datetime import date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -144,15 +144,6 @@ def test_update_moves_and_resizes_a_block(client, db):
     assert moved["time_zone"] == PACIFIC
     assert _block_ids(client, FUTURE) == []
     assert _block_ids(client, date(2030, 3, 6)) == [block["id"]]
-
-
-def test_update_can_take_the_zone_the_new_times_are_in(client, db):
-    block = _block(client, task_id=_task(db).id)
-    moved = client.put(
-        f"/update-work-block/{block['id']}",
-        json={"date": "2030-03-04", "start_time": "20:00", "end_time": "21:00", "time_zone": EASTERN},
-    ).json()
-    assert (moved["time_zone"], moved["starts_at"]) == (EASTERN, "2030-03-05T01:00:00Z")
 
 
 def test_update_rejects_a_block_ending_when_it_starts(client, db):
@@ -335,6 +326,16 @@ def test_archiving_a_task_deletes_its_future_blocks_and_keeps_past_ones(client, 
 
     assert _block_ids(client, PAST) == []
     assert _all_ids(client) == {parent_past["id"], child_past["id"]}
+
+
+def test_rearchiving_a_parent_keeps_the_started_blocks_of_a_child_archived_now(client, db):
+    parent = _task(db, title="Project", archived_at=datetime(2026, 1, 1, tzinfo=UTC))
+    child = _task(db, title="Outline", parent_task_id=parent.id)
+    child_past, _ = _past_and_future(client, child)
+
+    client.patch(f"/archive-task/{parent.id}")
+
+    assert _all_ids(client) == {child_past["id"]}
 
 
 def test_purging_a_task_or_habit_deletes_its_blocks(client, db):

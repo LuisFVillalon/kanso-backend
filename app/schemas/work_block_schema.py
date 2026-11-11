@@ -73,9 +73,6 @@ class WorkBlockUpdate(BaseModel):
     date: date
     start_time: ClockTime
     end_time: ClockTime
-    # Optional: the zone the new times are in, when it differs from the
-    # block's (the caller moved it from another time zone). Omitted keeps it.
-    time_zone: TimeZoneName | None = None
 
     @model_validator(mode="after")
     def _check(self):

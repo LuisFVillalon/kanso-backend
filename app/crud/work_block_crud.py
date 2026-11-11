@@ -109,7 +109,7 @@ def update_work_block(db: Session, block_id: int, payload: WorkBlockUpdate, user
     block = _get_visible(db, block_id, user_id)
     if block is None:
         return None
-    _place(block, payload.date, payload.start_time, payload.end_time, payload.time_zone or block.time_zone)
+    _place(block, payload.date, payload.start_time, payload.end_time, block.time_zone)
     db.commit()
     db.refresh(block)
     return present(block)

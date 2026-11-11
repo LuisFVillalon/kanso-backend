@@ -425,7 +425,7 @@ def archive_task(db: Session, task_id: int, user_id: str, linked: LinkedMode = "
     archived = [t for t in [task, *_descendants(db, task, user_id)] if t.archived_at is None]
     for t in archived:
         t.archived_at = stamp
-    drop_future_blocks(db, archived, stamp)
+    drop_future_blocks(db, archived, datetime.now(UTC))
     db.commit()
     db.refresh(task)
     return task
