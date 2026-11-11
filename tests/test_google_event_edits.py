@@ -383,7 +383,8 @@ def test_declined_and_free_events_show_but_are_not_busy(client, db, google):
     assert busy == {"Event busy": True, "Event free": False, "Event declined": False}
 
     report = client.get("/get-event-report", params={"start_date": _day(0), "end_date": _day(0), "tz": TZ}).json()
-    assert report["event_count"] == 3
+    # Declined and free events aren't counted.
+    assert report["event_count"] == 1
     assert report["total_minutes"] == 60 and report["event_window_minutes"] == 60
 
     debrief = client.get(

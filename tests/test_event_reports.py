@@ -1,7 +1,9 @@
 """Events in Reports (GET /get-event-report) and the daily brief: time by tag and day, and free work-window time."""
 
 from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
+from app.models.google_calendar_model import GoogleCalendar, GoogleCalendarConnection, GoogleCalendarEvent
 from app.models.profile_model import Profile
 from app.models.task_model import Task
 from tests.conftest import USER_ID
@@ -61,8 +63,8 @@ def test_report_counts_event_time_by_day_and_the_free_time_left_in_the_work_wind
     ]
     assert summary == [
         (1, 60, True, 0, 0, 0),
-        # Overlapping events take the window once: 10:00 to 12:00.
-        (2, 150, False, 840, 120, 720),
+        # Overlapping events count once: 10:00 to 12:00.
+        (2, 120, False, 840, 120, 720),
         # Only 8:00 to 9:00 of a 7:00 gym session is in the window.
         (1, 120, False, 840, 60, 780),
         # The archived office hours are past, so they still count.
@@ -73,15 +75,93 @@ def test_report_counts_event_time_by_day_and_the_free_time_left_in_the_work_wind
         (2, 120, False, 840, 60, 780),
         (0, 60, True, 0, 0, 0),
     ]
-    assert (report["event_count"], report["archived_count"], report["total_minutes"]) == (9, 1, 630)
+    assert (report["event_count"], report["archived_count"], report["total_minutes"]) == (9, 1, 600)
     assert (report["window_minutes"], report["event_window_minutes"], report["free_minutes"]) == (4200, 360, 3840)
     assert report["free_pct"] == 91.4
-    assert (report["busiest_day"]["date"], report["busiest_day"]["minutes"]) == (MON.isoformat(), 150)
+    assert (report["busiest_day"]["date"], report["busiest_day"]["minutes"]) == (MON.isoformat(), 120)
     assert [(b["tag"]["name"] if b["tag"] else None, b["minutes"], b["count"]) for b in report["by_tag"]] == [
         ("School", 330, 5), (None, 180, 3), ("Health", 120, 1), ("Work", 90, 1),
     ]
-    assert report["by_week"] == [{"start": SUN.isoformat(), "count": 9, "minutes": 630}]
-    assert report["by_month"] == [{"start": "2026-09-01", "count": 9, "minutes": 630}]
+    assert report["by_week"] == [{"start": SUN.isoformat(), "count": 9, "minutes": 600}]
+    assert report["by_month"] == [{"start": "2026-09-01", "count": 9, "minutes": 600}]
+
+
+def _google_event(db, title, first: date, last: date | None = None, start=None, end=None, **fields) -> None:
+    """An event imported from a selected Google calendar: all-day on first..last, or timed from
+    `start` on first to `end` on last (first if None), in Pacific time."""
+    if db.get(GoogleCalendarConnection, USER_ID) is None:
+        db.add(GoogleCalendarConnection(user_id=USER_ID, token_ciphertext=b"x", token_nonce=b"x", key_version=1))
+        db.flush()
+        db.add(GoogleCalendar(user_id=USER_ID, google_calendar_id="primary", name="Me", selected=True))
+        db.flush()
+    calendar = db.query(GoogleCalendar).filter_by(user_id=USER_ID).one()
+    last = last or first
+    zone = ZoneInfo(PACIFIC)
+    if start:
+        starts_at = datetime.combine(first, time.fromisoformat(start), zone)
+        ends_at = datetime.combine(last, time.fromisoformat(end), zone)
+    else:
+        starts_at = datetime.combine(first, time.min, zone)
+        ends_at = datetime.combine(last + timedelta(days=1), time.min, zone)
+    db.add(GoogleCalendarEvent(
+        user_id=USER_ID, calendar_id=calendar.id, google_event_id=title, title=title, all_day=not start,
+        start_date=first, end_date=last, starts_at=starts_at, ends_at=ends_at, google_starts_at=starts_at,
+        time_zone=PACIFIC, **fields,
+    ))
+    db.commit()
+
+
+def _day_minutes(report) -> list:
+    return [(d["count"], d["minutes"], d["event_window_minutes"]) for d in report["by_day"]]
+
+
+def test_a_timed_event_of_24_hours_or_more_adds_no_minutes(client, db):
+    _profile(db)
+    # A trip from Wednesday 15:00 to the next Sunday 18:00.
+    _google_event(db, "Trip", WED, SAT + timedelta(days=1), "15:00", "18:00")
+    report = _report(client)
+    # It counts once, on Wednesday, and takes none of the work windows.
+    assert _day_minutes(report) == [(0, 0, 0), (0, 0, 0), (0, 0, 0), (1, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)]
+    assert (report["event_count"], report["total_minutes"], report["free_minutes"], report["busiest_day"]) == (
+        1, 0, 4200, None,
+    )
+    assert [(b["tag"], b["minutes"]) for b in report["by_tag"]] == [(None, 0)]
+    brief = _brief(client, tz=PACIFIC, local_date=THU.isoformat())
+    assert [e["title"] for e in brief["events_today"]] == ["Trip"]
+    assert brief["workload"]["event_minutes"] == 0
+    assert [b["minutes"] for b in brief["event_minutes_by_tag"]] == [0]
+
+
+def test_overlapping_events_count_once_in_a_days_minutes(client, db):
+    _profile(db)
+    _event(client, "Lecture", MON, "10:00", "12:00")
+    _event(client, "Study group", MON, "11:00", "13:00")
+    report = _report(client, MON, MON)
+    assert _day_minutes(report) == [(2, 180, 180)]
+    assert (report["event_count"], report["total_minutes"]) == (2, 180)
+
+
+def test_a_multi_day_all_day_event_counts_once(client, db):
+    _profile(db)
+    _google_event(db, "Conference", TUE, THU)
+    report = _report(client)
+    assert [d["count"] for d in report["by_day"]] == [0, 0, 1, 0, 0, 0, 0]
+    assert (report["event_count"], report["total_minutes"]) == (1, 0)
+    # One that began before the range counts on its first day.
+    later = _report(client, WED, SAT)
+    assert [d["count"] for d in later["by_day"]] == [1, 0, 0, 0]
+    assert later["event_count"] == 1
+
+
+def test_a_declined_event_adds_no_minutes_and_isnt_counted(client, db):
+    _profile(db)
+    _google_event(db, "Declined sync", MON, None, "10:00", "11:00", busy=False)
+    _google_event(db, "Declined offsite", TUE, WED, busy=False)
+    report = _report(client)
+    assert _day_minutes(report) == [(0, 0, 0)] * 7
+    assert (report["event_count"], report["archived_count"], report["total_minutes"], report["free_minutes"]) == (
+        0, 0, 0, 4200,
+    )
 
 
 def test_report_leaves_out_upcoming_archived_events(client, db):
