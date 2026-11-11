@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from app.schemas.event_schema import EventOccurrence, EventTagMinutes
 from app.schemas.tag_schema import VisibleTags
+from app.schemas.work_block_schema import ClockTime, WorkBlock
 
 
 class DebriefTaskItem(BaseModel):
@@ -27,6 +28,8 @@ class HabitDebriefStatus(BaseModel):
     max_streak: int = 0
     logged_today: bool = False
     estimated_time: float | None = None
+    # The habit's usual local time of day ("HH:MM"), or null.
+    planned_time: ClockTime | None = None
     tags: VisibleTags = []
 
     model_config = {"from_attributes": True}
@@ -90,5 +93,8 @@ class DailyDebriefReport(BaseModel):
     # left out of both.
     event_minutes_by_tag: list[EventTagMinutes] = []
     passed_event_minutes_by_tag: list[EventTagMinutes] = []
+    # Today's work blocks (planned "work on it" times for tasks and habits)
+    # in start order. Not events: they count toward none of the above.
+    work_blocks: list[WorkBlock] = []
 
     model_config = {"from_attributes": True}

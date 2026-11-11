@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
@@ -8,6 +8,7 @@ from app.crud.event_occurrence_crud import todays_events
 from app.crud.habit_crud import get_habits, resolve_today
 from app.crud.note_session_crud import get_time_by_note_for_date, get_time_by_note_for_datetime_range
 from app.crud.profile_crud import day_window, get_profile, parse_hhmm
+from app.crud.work_block_crud import blocks_between
 from app.models.note_model import Note as NoteModel
 from app.models.task_model import Task as TaskModel
 from app.schemas.debrief_schema import (
@@ -185,6 +186,21 @@ def _build_focus_next(all_open: list[TaskModel], today: date) -> list[FocusNextI
     return items[:FOCUS_NEXT_LIMIT]
 
 
+def _todays_work_blocks(db: Session, user_id: str, today: date, tz: ZoneInfo | None):
+    """The work blocks starting on the caller's local `today`, in `tz` (each block's own zone if None)."""
+    if tz is not None:
+        span_start = datetime.combine(today, time.min, tzinfo=tz).astimezone(UTC)
+        span_end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz).astimezone(UTC)
+        blocks = blocks_between(db, user_id, span_start, span_end, tz)
+    else:
+        # Without the caller's zone, read each block's own day: fetch a span
+        # wide enough for any zone, then keep the blocks dated today.
+        span_start = datetime.combine(today - timedelta(days=1), time.min, tzinfo=UTC)
+        span_end = datetime.combine(today + timedelta(days=2), time.min, tzinfo=UTC)
+        blocks = blocks_between(db, user_id, span_start, span_end, None)
+    return [b for b in blocks if b.date == today]
+
+
 def build_daily_debrief(
     db: Session,
     user_id: str,
@@ -196,9 +212,10 @@ def build_daily_debrief(
     today's events, workload capacity, and a unified 'focus next' recommendation block.
     Archived and deleted tasks, notes and habits are left out of every section.
 
-    tz is the caller's time zone, which events are placed in; without it each
-    event is read in its own time zone. Event time inside today's work window
-    comes out of the capacity left for tasks.
+    tz is the caller's time zone, which events and work blocks are placed in;
+    without it each is read in its own time zone. Event time inside today's
+    work window comes out of the capacity left for tasks. Work blocks are
+    listed on their own and count toward no event figure or the workload.
 
     local_date/local_time are the caller's own calendar date and clock time
     (not the server's). The server may run in a different timezone (e.g. UTC),
@@ -267,6 +284,7 @@ def build_daily_debrief(
     workload = _build_workload(profile, due_today, today, events.window_minutes_taken)
 
     focus_next = _build_focus_next(open_tasks, today)
+    work_blocks = _todays_work_blocks(db, user_id, today, tz)
 
     return DailyDebriefReport(
         report_date=today,
@@ -281,4 +299,5 @@ def build_daily_debrief(
         passed_events_today=events.passed,
         event_minutes_by_tag=events.minutes_by_tag,
         passed_event_minutes_by_tag=events.passed_minutes_by_tag,
+        work_blocks=work_blocks,
     )

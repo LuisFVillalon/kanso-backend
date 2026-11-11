@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Index, Integer, Numeric, String, text
+from sqlalchemy import Column, DateTime, Index, Integer, Numeric, String, Time, text
 from sqlalchemy.orm import relationship
 
 from app.database.database import Base
@@ -22,6 +22,8 @@ class Habit(Base):
     current_streak = Column(Integer, nullable=False, default=0)
     max_streak = Column(Integer, nullable=False, default=0)
     estimated_time = Column(Numeric(precision=10, scale=2), nullable=True)
+    # The local time of day the user usually does it; NULL for no set time.
+    planned_time = Column(Time, nullable=True)
     # Set when the habit is archived; NULL means active.
     archived_at = Column(DateTime(timezone=True), nullable=True)
     # Set when the habit is deleted (moved to the trash); NULL otherwise.

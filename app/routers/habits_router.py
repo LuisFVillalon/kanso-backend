@@ -64,7 +64,7 @@ def update_habit_by_id(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Update a habit's title, color, and tags."""
+    """Update a habit's title, time goal, usual time and tags. planned_time is kept when it's left out."""
     return require_found(update_habit(db, habit_id, payload, current_user.id, local_date=local_date), "Habit not found")
 
 

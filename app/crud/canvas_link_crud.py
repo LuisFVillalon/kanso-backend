@@ -10,7 +10,8 @@ assignment is done is completed, with canvas_completed_at set to the same
 instant as completed_date, unless the connection's auto_complete is off. A
 task the sync completed once and the user reopened (canvas_completed_at
 still set) isn't completed again, and a completed task is never touched, so
-Canvas un-marking an item leaves its task as it is.
+Canvas un-marking an item leaves its task as it is. A task the sync completes
+loses its work blocks that haven't started yet, as when the user completes it.
 
 When the assignment's due date differs from the one the last sync saw
 (canvas_due_at), the task's due_date and due_time are moved to it, in the
@@ -44,6 +45,7 @@ host, comes back with synced=false and is left alone.
 """
 
 import re
+from collections.abc import Iterable
 from datetime import datetime, time
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -56,6 +58,7 @@ from app.crud import canvas_data_crud, canvas_sample
 from app.crud.base import archived_filter, deleted_filter
 from app.crud.canvas_crud import get_connection
 from app.crud.canvas_data_crud import CanvasNotConnected, canvas_url
+from app.crud.work_block_crud import drop_future_blocks
 from app.models.canvas_connection_model import CanvasConnection
 from app.models.task_model import Task as TaskModel
 from app.schemas.canvas_schema import CanvasAssignment, CanvasFeedItem, CanvasItem, CanvasLinkedTaskSync
@@ -152,6 +155,11 @@ def _apply(
     )
 
 
+def _drop_completed_blocks(db: Session, synced: Iterable[TaskModel], now: datetime) -> None:
+    """Delete the upcoming work blocks of the open tasks a sync just completed."""
+    drop_future_blocks(db, [t for t in synced if t.completed], now)
+
+
 def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool = False) -> dict:
     """Sync the user's open linked tasks with Canvas. See the module docstring.
 
@@ -209,6 +217,7 @@ def sync(db: Session, user_id: str, zone: ZoneInfo, now: datetime, refresh: bool
             if assignment.id in marked:
                 assignment = assignment.model_copy(update={"marked_complete": True})
             results.append(_apply(task, assignment, zone, now, auto_complete))
+    _drop_completed_blocks(db, tasks.values(), now)
     db.commit()
     return {
         "fetched_at": min((r.fetched_at for r in reads), default=now),
@@ -248,6 +257,7 @@ def _sync_feed(
             results.append(_unsynced(task_id))
         else:
             results.append(_apply(task, item, zone, now, auto_complete))
+    _drop_completed_blocks(db, tasks.values(), now)
     db.commit()
     return {"fetched_at": result.fetched_at, "busy": result.busy, "stale": result.stale, "results": results}
 
@@ -259,8 +269,10 @@ def sync_sample(db: Session, user_id: str, zone: ZoneInfo, now: datetime) -> lis
     """
     sample = canvas_sample.assignments_by_id(now.astimezone(zone).date(), zone)
     results = []
-    for task in _open_linked_tasks(db, user_id):
+    tasks = _open_linked_tasks(db, user_id)
+    for task in tasks:
         assignment = sample.get(task.canvas_assignment_id)
         results.append(_unsynced(task.id) if assignment is None else _apply(task, assignment, zone, now, True))
+    _drop_completed_blocks(db, tasks, now)
     db.commit()
     return results

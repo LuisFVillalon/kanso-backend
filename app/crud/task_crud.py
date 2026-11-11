@@ -9,6 +9,7 @@ from app.crud.base import archived_filter, deleted_filter, get_owned
 from app.crud.canvas_crud import get_connection
 from app.crud.tag_crud import set_item_tags
 from app.crud.trash_crud import get_trashed, purge_expired
+from app.crud.work_block_crud import drop_future_blocks
 from app.models.task_model import Task as TaskModel
 from app.schemas.task_schema import LinkedTaskRef, TaskCreate
 
@@ -270,7 +271,8 @@ def update_task_status(db: Session, task_id: int, user_id: str, with_linked: boo
 
     With with_linked=True, completing a task also completes its open, active
     linked tasks at every depth in the same transaction. Reopening a task
-    leaves them as they are.
+    leaves them as they are. Each task completed loses its work blocks that
+    haven't started yet.
     """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:
@@ -279,11 +281,15 @@ def update_task_status(db: Session, task_id: int, user_id: str, with_linked: boo
     task.completed = not task.completed
     task.completed_date = now if task.completed else None
     _drop_taken_canvas_link(db, user_id, task)
-    if with_linked and task.completed:
-        for child in _descendants(db, task, user_id):
-            if not child.completed and child.archived_at is None:
-                child.completed = True
-                child.completed_date = now
+    if task.completed:
+        completed = [task]
+        if with_linked:
+            for child in _descendants(db, task, user_id):
+                if not child.completed and child.archived_at is None:
+                    child.completed = True
+                    child.completed_date = now
+                    completed.append(child)
+        drop_future_blocks(db, completed, now)
     db.commit()
     db.refresh(task)
     return task
@@ -302,6 +308,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     """Replace all fields of an existing task, except its position. Returns None if not found.
 
     The Canvas link fields are replaced only when the payload includes them.
+    Completing the task deletes its work blocks that haven't started yet.
     """
     db_task = get_owned(db, TaskModel, task_id, user_id)
     if not db_task:
@@ -350,6 +357,7 @@ def update_task(db: Session, task_id: int, task: TaskCreate, user_id: str):
     # same-day completions out of the daily brief's activity log.
     if task.completed and not was_completed:
         db_task.completed_date = datetime.now(UTC)
+        drop_future_blocks(db, [db_task], db_task.completed_date)
     elif not task.completed:
         db_task.completed_date = None
 
@@ -405,7 +413,8 @@ def archive_task(db: Session, task_id: int, user_id: str, linked: LinkedMode = "
     tells them apart from subtasks archived on their own. With linked="keep"
     its active linked tasks are unlinked first and stay as standalone tasks;
     ones archived on their own stay linked. Idempotent: an already-archived
-    task keeps its original archived_at.
+    task keeps its original archived_at. Each task archived loses its work
+    blocks that haven't started yet.
     """
     task = get_owned(db, TaskModel, task_id, user_id)
     if not task:
@@ -413,9 +422,10 @@ def archive_task(db: Session, task_id: int, user_id: str, linked: LinkedMode = "
     if linked == "keep":
         _unlink_children(db, task, user_id, archived=False)
     stamp = task.archived_at or datetime.now(UTC)
-    for t in [task, *_descendants(db, task, user_id)]:
-        if t.archived_at is None:
-            t.archived_at = stamp
+    archived = [t for t in [task, *_descendants(db, task, user_id)] if t.archived_at is None]
+    for t in archived:
+        t.archived_at = stamp
+    drop_future_blocks(db, archived, datetime.now(UTC))
     db.commit()
     db.refresh(task)
     return task
