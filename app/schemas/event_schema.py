@@ -132,8 +132,21 @@ class Event(BaseModel):
     archived_at: datetime | None = None
     # NULL unless the series is in the trash.
     deleted_at: datetime | None = None
+    # "google" for an event imported from Google Calendar (a negative id),
+    # changed in kanso only. It stands for one instance, or for the instances
+    # of a repeating Google event that an archive or delete of them reached;
+    # its repeat rule is Google's, so repeat_days stays empty.
+    source: Literal["kanso", "google"] = "kanso"
+    # As on occurrences: a kanso series with repeat_days, or a repeating Google event.
+    repeating: bool = False
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def kanso_repeats_by_its_days(self):
+        if self.source == "kanso":
+            self.repeating = bool(self.repeat_days)
+        return self
 
 
 class EventOccurrence(BaseModel):
@@ -168,12 +181,20 @@ class EventOccurrence(BaseModel):
     past: bool = False
     # Archived, on its own or with its series.
     archived: bool = False
-    # "google" for an event imported from Google Calendar, which is
-    # read_only: only its tags can change (PATCH /google-calendar/events/{event_id}/tags).
+    # "google" for an event imported from Google Calendar. The event routes
+    # take its event_id like a kanso event's, changing it in kanso only, and
+    # its tags change through PATCH /google-calendar/events/{event_id}/tags.
     source: Literal["kanso", "google"] = "kanso"
+    # Always false: kept for older clients, from when imported events couldn't change.
     read_only: bool = False
     # An imported event's page in Google Calendar, if Google gave one.
     html_link: str | None = None
+    # False for an imported event the user declined or marked "Show as free":
+    # it shows, but counts toward no busy time (free time, clashes, workload, event hours).
+    busy: bool = True
+    # One of a repeating series, so a change asks which occurrences it's for:
+    # a kanso event with repeat_days, or an instance of a repeating Google event.
+    repeating: bool = False
 
 
 class EventTagMinutes(BaseModel):

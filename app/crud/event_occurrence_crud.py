@@ -18,7 +18,9 @@ What the calendar shows:
 Events imported from Google Calendar's selected calendars are occurrences
 too, counted like kanso's own: their rows already hold each instance, so they
 need no rule. Their event_id is the row's id negated, which can't collide
-with a kanso event's id, and they are read-only.
+with a kanso event's id. Kanso's edits, archives and deletes of them are on
+their rows (crud/google_event_crud.py). One the user declined, or marked
+"Show as free", shows but isn't busy: it adds no minutes to any count.
 """
 
 from collections.abc import Callable, Iterable, Iterator
@@ -117,6 +119,10 @@ class Occurrence:
     edited: bool
     source: str = "kanso"
     html_link: str | None = None
+    # Kanso events always; an imported event unless declined or "Show as free".
+    busy: bool = True
+    # One of a repeating series: a kanso event with repeat_days, or an instance of a repeating Google event.
+    repeating: bool = False
 
     def past(self, now: datetime) -> bool:
         return self.ends_at <= now
@@ -126,8 +132,8 @@ class Occurrence:
         return not self.archived or self.past(now)
 
     def minutes(self, start: datetime | None = None, end: datetime | None = None) -> float:
-        """Minutes of the occurrence inside [start, end), or all of it. All-day events have none."""
-        if self.all_day:
+        """Minutes of the occurrence inside [start, end), or all of it. All-day and not-busy events have none."""
+        if self.all_day or not self.busy:
             return 0
         return overlap_minutes(self.starts_at, self.ends_at, start or self.starts_at, end or self.ends_at)
 
@@ -173,6 +179,7 @@ def build_occurrence(event: Event, occurrence_date: date, exception: EventExcept
         ends_at=ends_at,
         archived=event.archived_at is not None or (exc is not None and exc.archived_at is not None),
         edited=edited,
+        repeating=bool(event.repeat_days),
     )
 
 
@@ -245,10 +252,12 @@ def _imported_occurrence(
         tags=row.resolved_tags,
         starts_at=starts_at,
         ends_at=ends_at,
-        archived=False,
-        edited=False,
+        archived=row.archived_at is not None,
+        edited=row.edited_at is not None,
         source="google",
         html_link=row.html_link,
+        busy=row.busy,
+        repeating=row.recurring_event_id is not None,
     )
 
 
@@ -271,7 +280,7 @@ def expand_imported(row: GoogleCalendarEvent, first: date, last: date, tz: ZoneI
 
 
 def load_imported(db: Session, user_id: str, first: date, last: date) -> list[GoogleCalendarEvent]:
-    """The user's imported events from selected calendars near local days first..last."""
+    """The user's undeleted imported events from selected calendars near local days first..last."""
     return (
         db.query(GoogleCalendarEvent)
         .join(GoogleCalendarEvent.calendar)
@@ -282,6 +291,8 @@ def load_imported(db: Session, user_id: str, first: date, last: date) -> list[Go
         .filter(
             GoogleCalendarEvent.user_id == user_id,
             GoogleCalendar.selected.is_(True),
+            GoogleCalendarEvent.deleted_at.is_(None),
+            GoogleCalendarEvent.cancelled.is_(False),
             # Days in the event's zone can sit a day off the caller's.
             GoogleCalendarEvent.start_date <= last + 2 * DAY,
             GoogleCalendarEvent.end_date >= first - 2 * DAY,
@@ -329,8 +340,9 @@ def present(occ: Occurrence, tz: ZoneInfo | None, now: datetime) -> EventOccurre
         past=occ.past(now),
         archived=occ.archived,
         source=occ.source,
-        read_only=occ.source != "kanso",
         html_link=occ.html_link,
+        busy=occ.busy,
+        repeating=occ.repeating,
     )
 
 
@@ -347,7 +359,8 @@ def get_occurrences(
 
 
 def get_archived_occurrences(db: Session, user_id: str, tz: ZoneInfo, now: datetime) -> list[EventOccurrence]:
-    """Occurrences archived on their own, of series that are neither archived nor deleted, by start.
+    """Occurrences archived on their own, of series that are neither archived nor deleted, by start,
+    imported ones included.
 
     Whole archived series are listed by GET /get-events?archived=true instead.
     """
@@ -358,6 +371,22 @@ def get_archived_occurrences(db: Session, user_id: str, tz: ZoneInfo, now: datet
         for exc in event.exceptions
         if exc.archived_at is not None and not _gone(exc) and occurs_on(event, exc.occurrence_date)
     ]
+    # Instances of repeating imported events archived on their own; one that
+    # doesn't repeat, or instances archived together, are archived series.
+    rows = (
+        db.query(GoogleCalendarEvent)
+        .options(selectinload(GoogleCalendarEvent.tags), selectinload(GoogleCalendarEvent.calendar))
+        .filter(
+            GoogleCalendarEvent.user_id == user_id,
+            GoogleCalendarEvent.recurring_event_id.isnot(None),
+            GoogleCalendarEvent.archived_at.isnot(None),
+            GoogleCalendarEvent.archived_by_id.is_(None),
+            GoogleCalendarEvent.deleted_at.is_(None),
+            GoogleCalendarEvent.cancelled.is_(False),
+        )
+        .all()
+    )
+    occurrences += [next(expand_imported(row, row.start_date, row.start_date, None)) for row in rows]
     occurrences.sort(key=lambda o: (o.starts_at, o.event.id))
     return [present(occ, tz, now) for occ in occurrences]
 
@@ -448,7 +477,7 @@ def get_event_report(db: Session, user_id: str, first: date, last: date, tz: Zon
             window_start, window_end = window_span(profile, day, tz)
             report_day.window_minutes = (window_end - window_start).total_seconds() / 60
             report_day.event_window_minutes = union_minutes(
-                ((occ.starts_at, occ.ends_at) for occ in timed), window_start, window_end
+                ((occ.starts_at, occ.ends_at) for occ in timed if occ.busy), window_start, window_end
             )
             report_day.free_minutes = report_day.window_minutes - report_day.event_window_minutes
         days.append(report_day)
@@ -545,7 +574,7 @@ def todays_events(
         taken = union_minutes(
             (
                 (occ.starts_at.astimezone(zone(occ)).replace(tzinfo=None), local_end(occ))
-                for occ in happening if not occ.all_day
+                for occ in happening if not occ.all_day and occ.busy
             ),
             window_start,
             window_end,

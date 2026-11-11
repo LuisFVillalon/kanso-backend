@@ -25,3 +25,6 @@ class TrashItem(BaseModel):
     # rather than the series, which id names. Pass it back to restore or
     # purge just that occurrence.
     occurrence_date: date | None = None
+    # Events only: "google" for an event imported from Google Calendar
+    # (a negative id), deleted in kanso only.
+    source: Literal["kanso", "google"] = "kanso"

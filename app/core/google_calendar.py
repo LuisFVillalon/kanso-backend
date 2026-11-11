@@ -111,6 +111,11 @@ class ImportedEvent:
     ends_at: datetime
     time_zone: str
     html_link: str | None
+    # False when the user declined it or it's marked "Show as free": it still
+    # shows, but isn't busy time.
+    busy: bool = True
+    # When it last changed in Google; None if Google didn't say.
+    updated: datetime | None = None
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -338,7 +343,30 @@ def parse_event(item: dict, calendar_zone: str) -> ImportedEvent | None:
         ends_at=ends_at,
         time_zone=zone_name,
         html_link=_https_link(item.get("htmlLink")),
+        busy=_busy(item),
+        updated=_updated(item.get("updated")),
     )
+
+
+def _busy(item: dict) -> bool:
+    if item.get("transparency") == "transparent":
+        return False
+    attendees = item.get("attendees")
+    if isinstance(attendees, list):
+        for attendee in attendees:
+            if isinstance(attendee, dict) and attendee.get("self") and attendee.get("responseStatus") == "declined":
+                return False
+    return True
+
+
+def _updated(value) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _https_link(value) -> str | None:
