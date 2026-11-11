@@ -9,7 +9,8 @@ DELETE /google-calendar/connection        — revokes the token where possible a
 GET    /google-calendar/calendars         — the account's calendars
 PATCH  /google-calendar/calendars/{id}    — selects a calendar or sets its default tag
 POST   /google-calendar/sync              — syncs now and returns the status
-PATCH  /google-calendar/events/{id}/tags  — sets an imported event's own tags, or returns it to the default
+PATCH  /google-calendar/events/{id}/tags  — sets an imported event's own tags, or returns it to the default;
+                                            scope "following" or "all" sets more instances of a repeating event
 
 All but the callback use the Supabase JWT. The callback is a browser redirect
 from Google with no JWT, so it connects nothing: it sends the browser to the
@@ -19,8 +20,9 @@ refuses (403 google_invalid_state) unless the state is live and was issued to
 the signed-in user, so a consent link can't attach someone else's Google account.
 
 Imported events reach the calendar through the existing event and activity
-responses, with source "google" and read_only true. Their event_id is
-negative, and is the {id} for setting their tags.
+responses, with source "google". Their event_id is negative, and is the {id}
+for setting their tags. The event routes take it too, to edit, archive and
+delete them in kanso only (crud/google_event_crud.py).
 
 Without the Google OAuth values the app runs as usual: status says
 configured=false and connect, complete and sync answer 503 google_calendar_not_configured.
@@ -40,6 +42,7 @@ from app.core.google_calendar import GoogleError, GoogleUnavailable
 from app.core.http_utils import allowed_origins, default_origin, require_found
 from app.core.rate_limit import RateLimiter
 from app.crud import google_calendar_crud as crud
+from app.crud import google_event_crud
 from app.database.database import get_db
 from app.schemas.google_calendar_schema import (
     GoogleCalendarComplete,
@@ -197,7 +200,11 @@ def patch_event_tags(
     current_user: UserInfo = Depends(_real_user),
     db: Session = Depends(get_db),
 ):
-    """Replace an imported event's own tags. Tags stay in kanso and never reach Google."""
+    """Replace the own tags of the imported event, or of the instances of a repeating one in scope.
+
+    Tags stay in kanso and never reach Google.
+    """
     return require_found(
-        crud.set_event_tags(db, event_id, current_user.id, body.tag_ids, body.use_default), "Event not found"
+        google_event_crud.set_event_tags(db, event_id, current_user.id, body.tag_ids, body.use_default, body.scope),
+        "Event not found",
     )

@@ -6,7 +6,10 @@ since its sync token; a full sync (no token, an expired one, or the rolling
 window due to move forward) replaces the window's events instead. Each
 calendar commits on its own, so a failure partway keeps what finished.
 Repeating events arrive as single instances, one row each, and a row keeps
-its tags whenever Google still lists it.
+its tags whenever Google still lists it. Kanso's own changes to imported
+events (crud/google_event_crud.py) survive syncs too: an edit's details stay
+until Google changes the event after it, and a "following" or "all" change
+reaches the instances later syncs import.
 
 Reads refresh the import when it is stale (refresh_if_stale). That needs no
 background worker, and a failure only lands in last_error: the calendar
@@ -34,6 +37,7 @@ from app.core.google_calendar import (
     GoogleSyncTokenExpired,
     ImportedEvent,
 )
+from app.crud import google_event_crud
 from app.crud.base import get_owned
 from app.models.google_calendar_model import (
     GoogleCalendar,
@@ -42,7 +46,7 @@ from app.models.google_calendar_model import (
     GoogleOAuthState,
 )
 from app.models.tag_model import Tag
-from app.schemas.google_calendar_schema import GoogleCalendarOut, GoogleCalendarStatus, GoogleEventTagsOut
+from app.schemas.google_calendar_schema import GoogleCalendarOut, GoogleCalendarStatus
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +63,9 @@ _FULL_BUDGET = 20
 _HISTORY = timedelta(days=366)
 _HORIZON = timedelta(days=396)
 _MOVE_WINDOW_AFTER = timedelta(days=30)
-_FIELDS = tuple(f for f in ImportedEvent.__dataclass_fields__ if f != "google_event_id")
+_FIELDS = tuple(f for f in ImportedEvent.__dataclass_fields__ if f not in ("google_event_id", "updated"))
+# The details a kanso edit changes, which a sync leaves alone until Google changes the event after it.
+_EDITABLE = {"title", "description", "all_day", "start_date", "end_date", "starts_at", "ends_at", "time_zone"}
 
 
 # ── The connection ───────────────────────────────────────────────────────────
@@ -332,14 +338,37 @@ def _sync_events(db: Session, calendar: GoogleCalendar, client: GoogleCalendarCl
     calendar.synced_through = window_end
 
 
-def _write(db: Session, calendar: GoogleCalendar, event: ImportedEvent, row: GoogleCalendarEvent | None) -> None:
-    if row is None:
+def _write(
+    db: Session, calendar: GoogleCalendar, event: ImportedEvent, row: GoogleCalendarEvent | None
+) -> GoogleCalendarEvent | None:
+    """Store the event in its row, or a new one. Returns the row if it's new.
+
+    A row kanso edited keeps its details unless Google changed the event after the edit.
+    """
+    new = row is None
+    if new:
         row = GoogleCalendarEvent(
             user_id=calendar.user_id, calendar_id=calendar.id, google_event_id=event.google_event_id
         )
         db.add(row)
+    keep_edit = row.edited_at is not None and (event.updated is None or event.updated <= row.edited_at)
     for field in _FIELDS:
-        setattr(row, field, getattr(event, field))
+        if not (keep_edit and field in _EDITABLE):
+            setattr(row, field, getattr(event, field))
+    row.google_starts_at = event.starts_at
+    if not keep_edit:
+        row.edited_at = None
+    return row if new else None
+
+
+def _write_all(db: Session, calendar: GoogleCalendar, events: dict, rows: dict) -> None:
+    """Store each event in its row, then give new instances the changes made to their series."""
+    new_rows = []
+    for google_id, event in events.items():
+        row = _write(db, calendar, event, rows.get(google_id))
+        if row is not None:
+            new_rows.append((row, event.updated))
+    google_event_crud.apply_overrides(db, calendar.user_id, new_rows)
 
 
 def _parse_all(calendar: GoogleCalendar, items: list[dict]) -> dict[str, ImportedEvent | None]:
@@ -378,8 +407,7 @@ def _apply_changes(db: Session, calendar: GoogleCalendar, items: list[dict]) -> 
                 GoogleCalendarEvent.google_event_id.in_(changed),
             )
         }
-        for google_id, event in changed.items():
-            _write(db, calendar, event, rows.get(google_id))
+        _write_all(db, calendar, changed, rows)
 
 
 def _replace_window(
@@ -391,11 +419,10 @@ def _replace_window(
         row.google_event_id: row
         for row in db.query(GoogleCalendarEvent).filter(GoogleCalendarEvent.calendar_id == calendar.id)
     }
-    for google_id, event in events.items():
-        _write(db, calendar, event, rows.get(google_id))
+    _write_all(db, calendar, events, rows)
     removed = [
         row.id for google_id, row in rows.items()
-        if google_id not in events and row.ends_at > window_start and row.starts_at < window_end
+        if google_id not in events and row.ends_at > window_start and row.google_starts_at < window_end
     ]
     if removed:
         db.execute(delete(GoogleCalendarEvent).where(GoogleCalendarEvent.id.in_(removed)))
@@ -449,29 +476,3 @@ def update_calendar(db: Session, calendar_id: int, user_id: str, changes: dict) 
     db.commit()
     db.refresh(calendar)
     return _calendar_out(calendar)
-
-
-def set_event_tags(
-    db: Session, event_id: int, user_id: str, tag_ids: list[int], use_default: bool
-) -> GoogleEventTagsOut | None:
-    """Replace an imported event's own tags, by the event_id its occurrences carry.
-
-    Returns None if that isn't one of the user's imported events.
-    """
-    row = get_owned(db, GoogleCalendarEvent, -event_id, user_id) if event_id < 0 else None
-    if row is None:
-        return None
-    ids = set(tag_ids)
-    tags = db.query(Tag).filter(Tag.id.in_(ids), Tag.user_id == user_id, Tag.deleted_at.is_(None)).all() if ids else []
-    if len(tags) != len(ids):
-        raise _tag_not_found()
-    # Trashed tags stay linked, ready for the tag's restore, like set_item_tags.
-    row.tags = [] if use_default else tags + [tag for tag in row.tags if tag.deleted_at is not None]
-    row.tags_overridden = not use_default
-    db.commit()
-    db.refresh(row)
-    return GoogleEventTagsOut(
-        event_id=event_id,
-        tags=[tag for tag in row.resolved_tags if tag.deleted_at is None],
-        use_default=use_default,
-    )

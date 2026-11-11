@@ -4,8 +4,9 @@ The trash: deleted tasks, notes, tags, habits and events, kept for TRASH_RETENTI
 Deleting one of these sets its deleted_at instead of removing the row, so
 its tags, habit logs and note sessions survive for a restore. One deleted
 occurrence of a repeating event is its exception row's deleted_at (see
-event_crud). Every normal
-list, lookup and stat leaves deleted rows out (see base.get_owned).
+event_crud), and an event imported from Google is its row's
+(google_event_crud). Every normal list, lookup and stat leaves deleted rows
+out (see base.get_owned).
 
 Expired rows are purged for every user at once, with no scheduler:
 purge_expired runs at startup and whenever anyone opens the trash, restores
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.crud.base import TRASH_RETENTION, get_owned, trash_cutoff
 from app.models.event_model import Event, EventException
+from app.models.google_calendar_model import GoogleCalendarEvent, GoogleEventOverride
 from app.models.habit_model import Habit
 from app.models.note_model import Note
 from app.models.tag_model import Tag
@@ -39,8 +41,8 @@ def purge_expired(db: Session) -> None:
     One delete per table, served by its deleted_at index. Tag links, habit
     logs, note sessions and event exceptions go with their rows (ON DELETE
     CASCADE); subtasks of a purged task are detached first, found by the
-    parent_task_id index. An expired event occurrence is cancelled instead,
-    so its series doesn't bring it back.
+    parent_task_id index. An expired event occurrence, or imported event, is
+    cancelled instead, so its series or the next sync doesn't bring it back.
     Concurrent runs are safe: a row another run already deleted is just
     skipped.
     """
@@ -55,12 +57,13 @@ def purge_expired(db: Session) -> None:
         )
     for model in TRASHABLE_MODELS.values():
         db.execute(delete(model).where(model.deleted_at <= cutoff).execution_options(synchronize_session="fetch"))
-    db.execute(
-        update(EventException)
-        .where(EventException.deleted_at <= cutoff)
-        .values(deleted_at=None, cancelled=True)
-        .execution_options(synchronize_session="fetch")
-    )
+    for model in (EventException, GoogleCalendarEvent, GoogleEventOverride):
+        db.execute(
+            update(model)
+            .where(model.deleted_at <= cutoff)
+            .values(deleted_at=None, cancelled=True)
+            .execution_options(synchronize_session="fetch")
+        )
 
 
 def get_trash(db: Session, user_id: str) -> list[TrashItem]:
@@ -104,6 +107,10 @@ def get_trash(db: Session, user_id: str) -> list[TrashItem]:
         )
         for exc, series_title in occurrences
     )
+    # Imported here: google_event_crud reaches tag_crud, which imports this module.
+    from app.crud import google_event_crud
+
+    items.extend(google_event_crud.trash_items(db, user_id))
     return sorted(items, key=lambda item: item.deleted_at, reverse=True)
 
 

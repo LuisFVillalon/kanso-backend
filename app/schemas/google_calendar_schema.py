@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -48,6 +49,11 @@ class GoogleEventTagsUpdate(BaseModel):
     # With an empty tag_ids, returns the event to its calendar's default tag.
     # An empty tag_ids without it leaves the event deliberately untagged.
     use_default: bool = False
+    # Which instances of a repeating event to change, replacing their own
+    # tags: this one, it and every later one ("following"), or all of them,
+    # those a later sync imports included. An event that doesn't repeat
+    # treats every scope as "this".
+    scope: Literal["this", "following", "all"] = "this"
 
     @model_validator(mode="after")
     def default_means_no_tags(self):

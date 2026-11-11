@@ -362,7 +362,8 @@ def test_first_sync_imports_events_with_the_occurrence_shape(client, db, google)
     assert status["last_synced_at"]
 
     [event] = _activity_events(client)
-    assert event["source"] == "google" and event["read_only"] is True
+    assert event["source"] == "google" and event["read_only"] is False
+    assert event["repeating"] is False and event["busy"] is True
     assert event["event_id"] < 0
     assert event["title"] == "Event a"
     assert event["description"] == "Notes"
@@ -733,26 +734,6 @@ def test_a_trashed_default_tag_is_hidden(client, db, google):
 
 # ── Read-only ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize(
-    "method,path,kwargs",
-    [
-        ("put", "/update-event/{id}", {"json": {"title": "Hacked"}}),
-        ("patch", "/archive-event/{id}", {}),
-        ("patch", "/unarchive-event/{id}", {}),
-        ("delete", "/del-event/{id}", {}),
-        ("patch", "/restore-event/{id}", {}),
-        ("delete", "/purge-event/{id}", {}),
-    ],
-)
-def test_kanso_event_routes_refuse_imported_events(client, db, google, method, path, kwargs):
-    google.full[PRIMARY] = [_timed("a")]
-    _connect(client)
-    event_id = _activity_events(client)[0]["event_id"]
-    response = getattr(client, method)(path.format(id=event_id), **kwargs)
-    assert response.status_code == 403 and response.json()["detail"] == "google_event_read_only"
-    assert _row(db, "a").title == "Event a"
-
-
 def test_the_import_only_reads_from_google(client, db, google):
     google.full[PRIMARY] = [_timed("a")]
     _connect(client)
@@ -766,9 +747,10 @@ def test_kanso_occurrences_say_where_they_came_from(client, db, google):
     created = client.post("/create-event", json={
         "title": "Mine", "start_date": _day(0), "start_time": "09:00:00", "end_time": "10:00:00", "time_zone": TZ,
     })
-    assert "source" not in created.json() and "read_only" not in created.json()
+    assert created.json()["source"] == "kanso" and "read_only" not in created.json()
     [event] = _activity_events(client)
     assert event["source"] == "kanso" and event["read_only"] is False and event["html_link"] is None
+    assert event["busy"] is True and event["repeating"] is False
 
 
 # ── Counting ─────────────────────────────────────────────────────────────────
