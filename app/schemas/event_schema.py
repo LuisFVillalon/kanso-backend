@@ -207,7 +207,8 @@ class EventTagMinutes(BaseModel):
 class EventReportDay(BaseModel):
     date: date
     count: int = 0
-    # Minutes of events on this day (an event past midnight counts on both days).
+    # Minutes of this day in events, each minute once however many events
+    # overlap it, so never past 24 hours (an event past midnight counts on both days).
     minutes: float = 0
     is_rest_day: bool = False
     # The work window's length, 0 on a rest day.
@@ -228,12 +229,14 @@ class EventReportPeriod(BaseModel):
 class EventReport(BaseModel):
     start_date: date
     end_date: date
-    # Occurrences that start in the range: past ones (archived or not) and
-    # upcoming ones that aren't archived; upcoming archived ones are left out.
+    # Busy occurrences that start in the range, each once however many days it
+    # covers: past ones (archived or not) and upcoming ones that aren't
+    # archived; upcoming archived ones are left out.
     event_count: int = 0
-    # Past archived occurrences in the range; upcoming archived ones are left out.
+    # Past archived occurrences among them; upcoming archived ones are left out.
     archived_count: int = 0
-    # Minutes of events in the range. All-day events count but add no minutes.
+    # Minutes of events in the range, overlaps once. All-day events and timed
+    # ones of 24 hours or more count but add no minutes.
     total_minutes: float = 0
     # Free time in the work windows: window_minutes is every day's work
     # window added up (rest days add none), event_window_minutes the part of
@@ -246,6 +249,7 @@ class EventReport(BaseModel):
     # The day with the most event minutes; null if there are none.
     busiest_day: EventReportDay | None = None
     # Minutes per tag; an event with several tags counts in full under each.
+    # 24-hour-plus events add no minutes, as all-day ones.
     by_tag: list[EventTagMinutes] = []
     by_day: list[EventReportDay] = []
     by_week: list[EventReportPeriod] = []

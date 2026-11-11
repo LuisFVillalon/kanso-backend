@@ -21,6 +21,9 @@ need no rule. Their event_id is the row's id negated, which can't collide
 with a kanso event's id. Kanso's edits, archives and deletes of them are on
 their rows (crud/google_event_crud.py). One the user declined, or marked
 "Show as free", shows but isn't busy: it adds no minutes to any count.
+
+A timed event of 24 hours or more (a trip, a conference, "Out of office")
+counts like an all-day event: it shows on its days but adds no minutes.
 """
 
 from collections.abc import Callable, Iterable, Iterator
@@ -131,9 +134,19 @@ class Occurrence:
         """Shown on calendars: archived occurrences only once they're over."""
         return not self.archived or self.past(now)
 
+    @property
+    def spans_days(self) -> bool:
+        """A timed occurrence 24 hours or longer: counted like an all-day one."""
+        return not self.all_day and self.ends_at - self.starts_at >= DAY
+
+    @property
+    def takes_time(self) -> bool:
+        """Whether it adds minutes: busy, and neither all-day nor 24 hours or longer."""
+        return self.busy and not self.all_day and not self.spans_days
+
     def minutes(self, start: datetime | None = None, end: datetime | None = None) -> float:
-        """Minutes of the occurrence inside [start, end), or all of it. All-day and not-busy events have none."""
-        if self.all_day or not self.busy:
+        """Minutes of the occurrence inside [start, end), or all of it. Only one that takes_time has any."""
+        if not self.takes_time:
             return 0
         return overlap_minutes(self.starts_at, self.ends_at, start or self.starts_at, end or self.ends_at)
 
@@ -451,34 +464,44 @@ def get_event_report(db: Session, user_id: str, first: date, last: date, tz: Zon
     occurrences, and upcoming archived ones are left out of every figure. A day's work window is its profile
     day_windows entry or the day start and "Call it a day" times (8 AM to
     10 PM if unset); rest days have none.
+
+    A day's minutes count each minute once however many events overlap it, so
+    a day never passes 24 hours; all-day, 24-hour-plus and not-busy events add
+    none. Each busy event counts once, on the day it starts in the range: a
+    multi-day all-day imported event, which has an occurrence per day, counts
+    on its first day, or on `first` if it began earlier. Not-busy events
+    aren't counted.
     """
     profile = get_profile(db, user_id)
     # A work window past midnight reaches into the day after the range.
     occurrences = [occ for occ in occurrences_between(db, user_id, first, last + DAY, tz) if occ.visible(now)]
-    timed = [occ for occ in occurrences if not occ.all_day]
+    spans = [(occ.starts_at, occ.ends_at) for occ in occurrences if occ.takes_time]
 
     days: list[EventReportDay] = []
     counted: list[Occurrence] = []
+    # An imported event is one row however many days it covers; a kanso series has one occurrence per date.
+    seen: set[tuple[int, date | None]] = set()
     day = first
     while day <= last:
         day_start, day_end = _midnight(day, tz), _midnight(day + DAY, tz)
-        starting = [
-            occ for occ in occurrences
-            if (occ.day if occ.all_day else occ.starts_at.astimezone(tz).date()) == day
-        ]
+        starting = []
+        for occ in occurrences:
+            key = (occ.event.id, occ.occurrence_date if occ.source == "kanso" else None)
+            on_day = (occ.day if occ.all_day else occ.starts_at.astimezone(tz).date()) == day
+            if occ.busy and on_day and key not in seen:
+                seen.add(key)
+                starting.append(occ)
         counted += starting
         report_day = EventReportDay(
             date=day,
             count=len(starting),
-            minutes=sum(occ.minutes(day_start, day_end) for occ in timed),
+            minutes=union_minutes(spans, day_start, day_end),
             is_rest_day=is_rest_day(profile, day),
         )
         if not report_day.is_rest_day:
             window_start, window_end = window_span(profile, day, tz)
             report_day.window_minutes = (window_end - window_start).total_seconds() / 60
-            report_day.event_window_minutes = union_minutes(
-                ((occ.starts_at, occ.ends_at) for occ in timed if occ.busy), window_start, window_end
-            )
+            report_day.event_window_minutes = union_minutes(spans, window_start, window_end)
             report_day.free_minutes = report_day.window_minutes - report_day.event_window_minutes
         days.append(report_day)
         day += DAY
@@ -574,7 +597,7 @@ def todays_events(
         taken = union_minutes(
             (
                 (occ.starts_at.astimezone(zone(occ)).replace(tzinfo=None), local_end(occ))
-                for occ in happening if not occ.all_day and occ.busy
+                for occ in happening if occ.takes_time
             ),
             window_start,
             window_end,

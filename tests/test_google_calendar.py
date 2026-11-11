@@ -769,8 +769,8 @@ def test_imported_events_count_in_the_report_like_kanso_events(client, db, googl
         "/get-event-report", params={"start_date": _day(0), "end_date": _day(0), "tz": TZ}
     ).json()
     assert report["event_count"] == 3
-    # 60 + 60 minutes, and the all-day event adds none.
-    assert report["total_minutes"] == 120
+    # 09:00-10:30, overlaps once, and the all-day event adds none.
+    assert report["total_minutes"] == 90
     # 09:00-10:30 inside the window: overlaps count once, as for kanso events.
     assert report["event_window_minutes"] == 90
 
