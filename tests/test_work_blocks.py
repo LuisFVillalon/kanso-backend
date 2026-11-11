@@ -57,6 +57,7 @@ def _block_ids(client, start: date, end: date | None = None, **params) -> list[i
 
 # ── Create, update, delete ───────────────────────────────────────────────────
 
+
 def test_create_returns_the_block_with_its_tasks_title_and_tags(client, db):
     tag = Tag(name="COMM 103", user_id=USER_ID, color="#336699")
     db.add(tag)
@@ -180,6 +181,7 @@ def test_blocks_belong_to_their_owner(client, db):
 
 # ── Calendar activity and the daily debrief ──────────────────────────────────
 
+
 def test_calendar_activity_lists_blocks_overlapping_the_range_in_start_order(client, db):
     task, habit = _task(db), _habit(db)
     late = _block(client, task_id=task.id, start="17:00", end="18:00")
@@ -261,6 +263,7 @@ def test_blocks_are_not_events_in_reports_or_reminders(client, db):
 
 
 # ── Completing, archiving and deleting tasks ─────────────────────────────────
+
 
 def _past_and_future(client, task):
     return _block(client, task_id=task.id, day=PAST), _block(client, task_id=task.id, day=FUTURE)
@@ -371,6 +374,7 @@ def test_account_deletion_removes_blocks(client, db):
 
 
 # ── Habits' usual time ───────────────────────────────────────────────────────
+
 
 def test_habits_save_and_return_their_usual_time(client):
     created = client.post("/create-habit", json={"title": "Spanish practice", "planned_time": "09:30"})
