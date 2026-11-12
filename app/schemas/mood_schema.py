@@ -33,14 +33,25 @@ KIND_FIELDS: dict[str, tuple[str, ...]] = {
 FUTURE_SKEW = timedelta(days=1)
 
 
+def normalize_mood_tag(tag: str) -> str:
+    """Trim a tag and spell a default tag the default way, ignoring case. Blank stays blank."""
+    name = tag.strip()
+    return _DEFAULT_BY_KEY.get(name.casefold(), name)
+
+
+def default_mood_tag(tag: str) -> str | None:
+    """The default tag matching tag, ignoring case and surrounding spaces, or None for a custom one."""
+    return _DEFAULT_BY_KEY.get(tag.strip().casefold())
+
+
 def _normalize_tags(tags: list[str]) -> list[str]:
     """Trim, drop blanks and case-insensitive repeats, and spell default tags the default way."""
     seen: dict[str, str] = {}
     for tag in tags:
-        name = tag.strip()
+        name = normalize_mood_tag(tag)
         key = name.casefold()
         if name and key not in seen:
-            seen[key] = _DEFAULT_BY_KEY.get(key, name)
+            seen[key] = name
     if len(seen) > MOOD_TAGS_PER_CHECKIN_MAX:
         raise ValueError(f"A check-in may have at most {MOOD_TAGS_PER_CHECKIN_MAX} tags.")
     return list(seen.values())
@@ -107,10 +118,25 @@ class MoodCheckin(BaseModel):
 
 
 class MoodTags(BaseModel):
-    # The built-in list, in picker order.
+    # The built-in list, in picker order, less the ones the user has hidden.
     defaults: list[str]
     # Tags the user has added on their own check-ins, most recently used first.
     custom: list[str]
+
+
+class MoodTagRename(BaseModel):
+    old: str = Field(..., max_length=TAG_NAME_MAX)
+    new: str = Field(..., max_length=TAG_NAME_MAX)
+
+
+class MoodTagRenamed(BaseModel):
+    # How many of the user's check-ins changed.
+    renamed: int
+
+
+class MoodTagDeleted(BaseModel):
+    # How many of the user's check-ins changed.
+    deleted: int
 
 
 # ── Profile settings ─────────────────────────────────────────────────────────

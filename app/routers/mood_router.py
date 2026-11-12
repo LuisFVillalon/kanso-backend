@@ -5,9 +5,26 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import UserInfo, get_current_user
 from app.core.http_utils import require_date_range, require_found
-from app.crud.mood_crud import delete_checkin, get_checkins, get_mood_tags, save_checkin
+from app.crud.mood_crud import (
+    delete_checkin,
+    delete_mood_tag,
+    get_checkins,
+    get_mood_tags,
+    rename_mood_tag,
+    save_checkin,
+)
 from app.database.database import get_db
-from app.schemas.mood_schema import MOOD_PERIOD_KINDS, MoodCheckin, MoodCheckinSave, MoodTags
+from app.schemas.limits import TAG_NAME_MAX
+from app.schemas.mood_schema import (
+    MOOD_PERIOD_KINDS,
+    MoodCheckin,
+    MoodCheckinSave,
+    MoodTagDeleted,
+    MoodTagRename,
+    MoodTagRenamed,
+    MoodTags,
+    normalize_mood_tag,
+)
 
 router = APIRouter()
 
@@ -68,5 +85,36 @@ def read_mood_tags(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return the default mood tags and the custom ones the user has used. These are separate from task tags."""
+    """Return the default mood tags the user hasn't hidden and the custom ones they use. Not task tags."""
     return get_mood_tags(db, current_user.id)
+
+
+def _bad_request(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+@router.patch("/rename-mood-tag", response_model=MoodTagRenamed)
+def rename_tag(
+    body: MoodTagRename,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Rename a mood tag on every one of the user's check-ins; renaming a default also hides it."""
+    old, new = normalize_mood_tag(body.old), normalize_mood_tag(body.new)
+    if not old or not new:
+        raise _bad_request("old and new must not be blank.")
+    if old == new:
+        raise _bad_request("new must differ from old.")
+    return MoodTagRenamed(renamed=rename_mood_tag(db, current_user.id, old, new))
+
+
+@router.delete("/del-mood-tag", response_model=MoodTagDeleted)
+def delete_tag(
+    tag: str = Query(..., max_length=TAG_NAME_MAX, description="The mood tag to remove, ignoring case."),
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a mood tag from every one of the user's check-ins; deleting a default also hides it."""
+    if not tag.strip():
+        raise _bad_request("tag must not be blank.")
+    return MoodTagDeleted(deleted=delete_mood_tag(db, current_user.id, tag))

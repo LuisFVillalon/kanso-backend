@@ -7,8 +7,9 @@ import pytest
 from app.core.auth import UserInfo, get_current_user
 from app.crud.account_crud import delete_user_rows
 from app.crud.demo_crud import seed_demo_data
+from app.crud.mood_crud import get_mood_tags
 from app.main import app
-from app.models.mood_checkin_model import MoodCheckin
+from app.models.mood_checkin_model import HiddenMoodTag, MoodCheckin
 from app.models.profile_model import Profile
 from app.schemas.mood_schema import DEFAULT_MOOD_TAGS
 from tests.conftest import OTHER_USER_ID, USER_ID
@@ -219,6 +220,97 @@ def test_mood_tags_without_check_ins_are_just_the_defaults(client):
     assert client.get("/get-mood-tags").json() == {"defaults": list(DEFAULT_MOOD_TAGS), "custom": []}
 
 
+def _tags(db, user_id=USER_ID) -> list[list[str]]:
+    db.expire_all()
+    rows = db.query(MoodCheckin).filter(MoodCheckin.user_id == user_id).order_by(MoodCheckin.period_start)
+    return [row.tags for row in rows]
+
+
+def test_renaming_a_tag_changes_it_on_every_check_in_and_merges_duplicates(client, db):
+    _row(db, DAY - timedelta(days=2), tags=["gym", "Tired"])
+    _row(db, DAY - timedelta(days=1), tags=["Workout", "Social", "Gym"])
+    _row(db, DAY, tags=["Social"])
+    _row(db, DAY, user_id=OTHER_USER_ID, tags=["Gym"])
+
+    resp = client.patch("/rename-mood-tag", json={"old": "Gym", "new": " Workout "})
+    assert resp.status_code == 200
+    assert resp.json() == {"renamed": 2}
+    assert _tags(db) == [["Workout", "Tired"], ["Workout", "Social"], ["Social"]]
+    assert _tags(db, OTHER_USER_ID) == [["Gym"]]
+    assert client.get("/get-mood-tags").json()["custom"] == ["Workout"]
+
+
+def test_renaming_a_tag_can_change_only_its_case(client, db):
+    _row(db, DAY, tags=["gym"])
+    assert client.patch("/rename-mood-tag", json={"old": "gym", "new": "Gym"}).json() == {"renamed": 1}
+    assert _tags(db) == [["Gym"]]
+
+
+@pytest.mark.parametrize("body", [
+    {"old": "Gym", "new": ""},
+    {"old": "Gym", "new": "   "},
+    {"old": "Gym", "new": "Gym"},
+    {"old": "busy", "new": "Busy"},
+    {"old": "", "new": "Gym"},
+])
+def test_renaming_to_a_blank_or_the_same_tag_is_a_400(client, db, body):
+    _row(db, DAY, tags=["Gym"])
+    assert client.patch("/rename-mood-tag", json=body).status_code == 400
+    assert _tags(db) == [["Gym"]]
+
+
+def test_renaming_a_default_tag_hides_it_and_renaming_back_shows_it(client, db):
+    _row(db, DAY, tags=["Tired"])
+    assert client.patch("/rename-mood-tag", json={"old": "tired", "new": "Sleepy"}).json() == {"renamed": 1}
+    body = client.get("/get-mood-tags").json()
+    assert "Tired" not in body["defaults"]
+    assert body["custom"] == ["Sleepy"]
+
+    assert client.patch("/rename-mood-tag", json={"old": "Sleepy", "new": "tired"}).json() == {"renamed": 1}
+    assert _tags(db) == [["Tired"]]
+    assert client.get("/get-mood-tags").json() == {"defaults": list(DEFAULT_MOOD_TAGS), "custom": []}
+
+
+def test_deleting_a_tag_removes_it_from_every_check_in(client, db):
+    _row(db, DAY - timedelta(days=1), tags=["Gym", "Social"])
+    _row(db, DAY, tags=["gym"])
+    _row(db, MONDAY, kind="week", tags=["Social"])
+    _row(db, DAY, user_id=OTHER_USER_ID, tags=["Gym"])
+
+    resp = client.delete("/del-mood-tag", params={"tag": "GYM"})
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 2}
+    assert sorted(_tags(db)) == [[], ["Social"], ["Social"]]
+    assert _tags(db, OTHER_USER_ID) == [["Gym"]]
+    assert client.get("/get-mood-tags").json()["custom"] == []
+    assert client.delete("/del-mood-tag", params={"tag": "Gym"}).json() == {"deleted": 0}
+
+
+def test_deleting_a_default_tag_hides_it_only_for_that_user(client, db):
+    _row(db, DAY, tags=["Busy", "Rainy"])
+    assert client.delete("/del-mood-tag", params={"tag": "busy"}).json() == {"deleted": 1}
+    assert client.delete("/del-mood-tag", params={"tag": "Sick"}).json() == {"deleted": 0}
+    assert client.delete("/del-mood-tag", params={"tag": "Sick"}).status_code == 200
+
+    body = client.get("/get-mood-tags").json()
+    assert body["defaults"] == [t for t in DEFAULT_MOOD_TAGS if t not in ("Busy", "Sick")]
+    assert body["custom"] == ["Rainy"]
+    assert get_mood_tags(db, OTHER_USER_ID).defaults == list(DEFAULT_MOOD_TAGS)
+    assert sorted(r.tag for r in db.query(HiddenMoodTag).all()) == ["Busy", "Sick"]
+
+
+def test_a_hidden_default_tag_typed_in_again_is_listed_as_custom(client, db):
+    client.delete("/del-mood-tag", params={"tag": "Busy"})
+    _save(client, mood=3, tags=["busy"])
+    body = client.get("/get-mood-tags").json()
+    assert "Busy" not in body["defaults"]
+    assert body["custom"] == ["Busy"]
+
+
+def test_deleting_a_blank_tag_is_a_400(client):
+    assert client.delete("/del-mood-tag", params={"tag": "  "}).status_code == 400
+
+
 # ── Profile settings ─────────────────────────────────────────────────────────
 
 DEFAULT_SETTINGS = {"weekly": False, "monthly": False}
@@ -271,9 +363,12 @@ def test_account_deletion_removes_only_that_users_check_ins(db):
     _row(db, DAY)
     _row(db, MONDAY, kind="week")
     _row(db, DAY, user_id=OTHER_USER_ID)
+    db.add_all([HiddenMoodTag(user_id=USER_ID, tag="Busy"), HiddenMoodTag(user_id=OTHER_USER_ID, tag="Sick")])
+    db.flush()
 
     delete_user_rows(db, USER_ID)
     assert [r.user_id for r in db.query(MoodCheckin).all()] == [OTHER_USER_ID]
+    assert [r.user_id for r in db.query(HiddenMoodTag).all()] == [OTHER_USER_ID]
 
 
 def test_demo_seed_adds_aligned_check_ins_before_today(db):
