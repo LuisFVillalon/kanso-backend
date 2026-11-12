@@ -57,17 +57,23 @@ class MoodCheckin(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
-class HiddenMoodTag(Base):
-    """A built-in mood tag the user has deleted or renamed, so the picker leaves it out.
+class UserMoodTag(Base):
+    """A user's own entry in the mood-tag picker, beyond what their check-ins carry.
 
-    Custom tags need no row: they are derived from the user's check-ins and go
-    away once no check-in carries them. tag holds the default's own spelling.
+    kind "hidden" is a built-in tag the user has deleted or renamed, so the
+    picker leaves it out; tag holds the default's own spelling. kind "custom"
+    is a name the user renamed a tag to, so the picker lists it even before a
+    check-in uses it. Other custom tags need no row: they come from check-ins.
     """
 
-    __tablename__ = "hidden_mood_tags"
-    __table_args__ = (UniqueConstraint("user_id", "tag", name="uq_hidden_mood_tags_user_tag"),)
+    __tablename__ = "user_mood_tags"
+    __table_args__ = (
+        UniqueConstraint("user_id", "kind", "tag", name="uq_user_mood_tags_user_kind_tag"),
+        CheckConstraint("kind IN ('hidden', 'custom')", name="ck_user_mood_tags_kind"),
+    )
 
     id = Column(Integer, primary_key=True)
     user_id = Column(String(36), nullable=False)
+    kind = Column(String(6), nullable=False)
     tag = Column(String(50), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

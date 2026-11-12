@@ -7,7 +7,7 @@ from app.models.drawing_model import Drawing
 from app.models.event_model import Event
 from app.models.google_calendar_model import GoogleCalendarConnection, GoogleOAuthState
 from app.models.habit_model import Habit
-from app.models.mood_checkin_model import HiddenMoodTag, MoodCheckin
+from app.models.mood_checkin_model import MoodCheckin, UserMoodTag
 from app.models.note_model import Note
 from app.models.notification_model import NotificationPreferences, NotificationState
 from app.models.profile_model import Profile
@@ -24,7 +24,7 @@ from app.models.work_block_model import WorkBlock
 USER_OWNED_MODELS = (
     WorkBlock, Note, Task, Habit, Event, Tag, Profile, Drawing, CalendarSettings, ArchivedTerm, TermRollover,
     NotificationPreferences, NotificationState,
-    MoodCheckin, HiddenMoodTag,
+    MoodCheckin, UserMoodTag,
     CanvasConnection,
     GoogleCalendarConnection, GoogleOAuthState,
 )

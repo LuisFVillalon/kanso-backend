@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.crud.base import get_owned
-from app.models.mood_checkin_model import HiddenMoodTag, MoodCheckin
+from app.models.mood_checkin_model import MoodCheckin, UserMoodTag
 from app.schemas.mood_schema import (
     DEFAULT_MOOD_TAGS,
     MoodCheckinSave,
@@ -71,17 +71,31 @@ def delete_checkin(db: Session, checkin_id: int, user_id: str) -> MoodCheckinOut
     return deleted
 
 
-def _hidden_tags(db: Session, user_id: str) -> set[str]:
-    return {tag for (tag,) in db.query(HiddenMoodTag.tag).filter(HiddenMoodTag.user_id == user_id)}
+def _stored_tags(db: Session, user_id: str, kind: str) -> list[UserMoodTag]:
+    """The user's stored tags of one kind, newest first."""
+    return (
+        db.query(UserMoodTag)
+        .filter(UserMoodTag.user_id == user_id, UserMoodTag.kind == kind)
+        .order_by(UserMoodTag.created_at.desc(), UserMoodTag.id.desc())
+        .all()
+    )
 
 
-def _hide_default(db: Session, user_id: str, default: str) -> None:
+def _store_tag(db: Session, user_id: str, kind: str, tag: str) -> None:
     stmt = (
-        insert(HiddenMoodTag)
-        .values(user_id=user_id, tag=default)
-        .on_conflict_do_nothing(constraint="uq_hidden_mood_tags_user_tag")
+        insert(UserMoodTag)
+        .values(user_id=user_id, kind=kind, tag=tag)
+        .on_conflict_do_nothing(constraint="uq_user_mood_tags_user_kind_tag")
     )
     db.execute(stmt)
+
+
+def _forget_tags(db: Session, user_id: str, kind: str, *keys: str) -> None:
+    """Delete the user's stored tags of one kind matching any of keys (casefolded)."""
+    for row in _stored_tags(db, user_id, kind):
+        if row.tag.casefold() in keys:
+            db.delete(row)
+    db.flush()
 
 
 def _checkins_with_tag(db: Session, user_id: str, key: str) -> list[MoodCheckin]:
@@ -94,9 +108,10 @@ def rename_mood_tag(db: Session, user_id: str, old: str, new: str) -> int:
     """Rename a tag, ignoring case, on every one of the user's check-ins. Returns how many changed.
 
     A check-in that already has new keeps one copy, where the first of the two
-    was. Renaming a default tag also hides it from the picker; renaming to a
-    hidden default shows that default again. The caller checks old and new
-    are non-blank and different.
+    was. The picker follows the rename even when no check-in uses old: a
+    default old is hidden, a custom new is stored so it is listed, and a
+    hidden default new is shown again. The caller checks old and new are
+    non-blank and different.
     """
     new = normalize_mood_tag(new)
     old_key, new_key = old.strip().casefold(), new.casefold()
@@ -113,11 +128,12 @@ def rename_mood_tag(db: Session, user_id: str, old: str, new: str) -> int:
             changed += 1
     old_default, new_default = default_mood_tag(old), default_mood_tag(new)
     if old_default and old_default != new_default:
-        _hide_default(db, user_id, old_default)
+        _store_tag(db, user_id, "hidden", old_default)
+    _forget_tags(db, user_id, "custom", old_key, new_key)
     if new_default:
-        db.query(HiddenMoodTag).filter(
-            HiddenMoodTag.user_id == user_id, HiddenMoodTag.tag == new_default
-        ).delete(synchronize_session=False)
+        _forget_tags(db, user_id, "hidden", new_key)
+    else:
+        _store_tag(db, user_id, "custom", new)
     db.commit()
     return changed
 
@@ -125,7 +141,7 @@ def rename_mood_tag(db: Session, user_id: str, old: str, new: str) -> int:
 def delete_mood_tag(db: Session, user_id: str, tag: str) -> int:
     """Remove a tag, ignoring case, from every one of the user's check-ins. Returns how many changed.
 
-    Deleting a default tag also hides it from the picker.
+    It also leaves the picker: a default tag is hidden, and a stored custom one is forgotten.
     """
     key = tag.strip().casefold()
     rows = _checkins_with_tag(db, user_id, key)
@@ -133,15 +149,19 @@ def delete_mood_tag(db: Session, user_id: str, tag: str) -> int:
         row.tags = [t for t in row.tags if t.casefold() != key]
     default = default_mood_tag(tag)
     if default:
-        _hide_default(db, user_id, default)
+        _store_tag(db, user_id, "hidden", default)
+    _forget_tags(db, user_id, "custom", key)
     db.commit()
     return len(rows)
 
 
 def get_mood_tags(db: Session, user_id: str) -> MoodTags:
-    """The default mood tags the user hasn't hidden, plus the custom ones they use, most recently used first.
+    """The default mood tags the user hasn't hidden, plus their custom ones.
 
-    A hidden default the user has typed in again since is listed with the custom tags.
+    Custom tags their check-ins carry come first, most recently used first,
+    then names they renamed a tag to that no check-in carries yet, newest
+    first. A hidden default the user has typed in again since is listed with
+    the custom tags.
     """
     used = func.unnest(MoodCheckin.tags).label("tag")
     rows = (
@@ -150,7 +170,7 @@ def get_mood_tags(db: Session, user_id: str) -> MoodTags:
         .order_by(MoodCheckin.period_start.desc(), MoodCheckin.id.desc())
         .all()
     )
-    hidden = _hidden_tags(db, user_id)
+    hidden = {row.tag for row in _stored_tags(db, user_id, "hidden")}
     shown = [tag for tag in DEFAULT_MOOD_TAGS if tag not in hidden]
     defaults = {tag.casefold() for tag in shown}
     custom: dict[str, str] = {}
@@ -158,4 +178,6 @@ def get_mood_tags(db: Session, user_id: str) -> MoodTags:
         key = tag.casefold()
         if key not in defaults and key not in custom:
             custom[key] = tag
+    for row in _stored_tags(db, user_id, "custom"):
+        custom.setdefault(row.tag.casefold(), row.tag)
     return MoodTags(defaults=shown, custom=list(custom.values()))
