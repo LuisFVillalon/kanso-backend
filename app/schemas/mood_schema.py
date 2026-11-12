@@ -120,7 +120,8 @@ class MoodCheckin(BaseModel):
 class MoodTags(BaseModel):
     # The built-in list, in picker order, less the ones the user has hidden.
     defaults: list[str]
-    # Tags the user has added on their own check-ins, most recently used first.
+    # Tags the user has added on their own check-ins, most recently used first,
+    # then names they renamed a tag to that no check-in carries yet.
     custom: list[str]
 
 
